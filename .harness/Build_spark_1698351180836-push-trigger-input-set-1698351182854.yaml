@@ -1,0 +1,14 @@
+inputSet:
+  name: Build_spark_1698351180836-push-trigger-input-set
+  identifier: Build_spark_1698351180836pushtriggerinputset
+  orgIdentifier: default
+  projectIdentifier: default_project
+  pipeline:
+    identifier: Build_spark_1698351180836
+    properties:
+      ci:
+        codebase:
+          build:
+            type: branch
+            spec:
+              branch: <+trigger.branch>
