@@ -1,0 +1,14 @@
+inputSet:
+  name: Build_spark_1698351180836-pr-trigger-input-set
+  identifier: Build_spark_1698351180836prtriggerinputset
+  orgIdentifier: default
+  projectIdentifier: default_project
+  pipeline:
+    identifier: Build_spark_1698351180836
+    properties:
+      ci:
+        codebase:
+          build:
+            type: PR
+            spec:
+              number: <+trigger.prNumber>
