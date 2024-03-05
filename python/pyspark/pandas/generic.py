@@ -331,8 +331,6 @@ class Frame(object, metaclass=ABCMeta):
         return self._apply_series_op(lambda psser: psser._cumsum(skipna), should_resolve=True)
 
     # TODO: add 'axis' parameter
-    # TODO: use pandas_udf to support negative values and other options later
-    #  other window except unbounded ones is supported as of Spark 3.0.
     def cumprod(self: FrameLike, skipna: bool = True) -> FrameLike:
         """
         Return cumulative product over a DataFrame or Series axis.
@@ -990,9 +988,7 @@ class Frame(object, metaclass=ABCMeta):
         startcol: int = 0,
         engine: Optional[str] = None,
         merge_cells: bool = True,
-        encoding: Optional[str] = None,
         inf_rep: str = "inf",
-        verbose: bool = True,
         freeze_panes: Optional[Tuple[int, int]] = None,
     ) -> None:
         """
@@ -1043,20 +1039,9 @@ class Frame(object, metaclass=ABCMeta):
             ``io.excel.xlsm.writer``.
         merge_cells: bool, default True
             Write MultiIndex and Hierarchical Rows as merged cells.
-        encoding: str, optional
-            Encoding of the resulting excel file. Only necessary for xlwt,
-            other writers support unicode natively.
-
-            .. deprecated:: 3.4.0
-
         inf_rep: str, default 'inf'
             Representation for infinity (there is no native representation for
             infinity in Excel).
-        verbose: bool, default True
-            Display more information in the error logs.
-
-            .. deprecated:: 3.4.0
-
         freeze_panes: tuple of int (length 2), optional
             Specifies the one-based bottommost row and rightmost column that
             is to be frozen.
@@ -1116,6 +1101,126 @@ class Frame(object, metaclass=ABCMeta):
             )
         return validate_arguments_and_invoke_function(
             psdf._to_internal_pandas(), self.to_excel, f, args
+        )
+
+    def to_hdf(
+        self,
+        path_or_buf: Union[str, pd.HDFStore],
+        key: str,
+        mode: str = "a",
+        complevel: Optional[int] = None,
+        complib: Optional[str] = None,
+        append: bool = False,
+        format: Optional[str] = None,
+        index: bool = True,
+        min_itemsize: Optional[Union[int, Dict[str, int]]] = None,
+        nan_rep: Optional[Any] = None,
+        dropna: Optional[bool] = None,
+        data_columns: Optional[Union[bool, List[str]]] = None,
+        errors: str = "strict",
+        encoding: str = "UTF-8",
+    ) -> None:
+        """
+        Write the contained data to an HDF5 file using HDFStore.
+
+        .. note:: This method should only be used if the resulting DataFrame is expected
+                  to be small, as all the data is loaded into the driver's memory.
+
+        .. versionadded:: 4.0.0
+
+        Parameters
+        ----------
+        path_or_buf : str or pandas.HDFStore
+            File path or HDFStore object.
+        key : str
+            Identifier for the group in the store.
+        mode : {'a', 'w', 'r+'}, default 'a'
+            Mode to open file:
+
+            - 'w': write, a new file is created (an existing file with
+              the same name would be deleted).
+            - 'a': append, an existing file is opened for reading and
+              writing, and if the file does not exist it is created.
+            - 'r+': similar to 'a', but the file must already exist.
+
+        complevel : {0-9}, default None
+            Specifies a compression level for data.
+            A value of 0 or None disables compression.
+        complib : {'zlib', 'lzo', 'bzip2', 'blosc'}, default 'zlib'
+            Specifies the compression library to be used.
+            These additional compressors for Blosc are supported
+            (default if no compressor specified: 'blosc:blosclz'):
+            {'blosc:blosclz', 'blosc:lz4', 'blosc:lz4hc', 'blosc:snappy',
+            'blosc:zlib', 'blosc:zstd'}.
+            Specifying a compression library which is not available issues
+            a ValueError.
+        append : bool, default False
+            For Table formats, append the input data to the existing.
+        format : {'fixed', 'table', None}, default 'fixed'
+            Possible values:
+
+            - 'fixed': Fixed format. Fast writing/reading. Not-appendable,
+              nor searchable.
+            - 'table': Table format. Write as a PyTables Table structure
+              which may perform worse but allow more flexible operations
+              like searching / selecting subsets of the data.
+            - If None, pd.get_option('io.hdf.default_format') is checked,
+              followed by fallback to "fixed".
+
+        index : bool, default True
+            Write DataFrame index as a column.
+        min_itemsize : dict or int, optional
+            Map column names to minimum string sizes for columns.
+        nan_rep : Any, optional
+            How to represent null values as str.
+            Not allowed with append=True.
+        dropna : bool, default False, optional
+            Remove missing values.
+        data_columns : list of columns or True, optional
+            List of columns to create as indexed data columns for on-disk
+            queries, or True to use all columns. By default only the axes
+            of the object are indexed. Applicable only to format='table'.
+        errors : str, default 'strict'
+            Specifies how encoding and decoding errors are to be handled.
+            See the errors argument for :func:`open` for a full list
+            of options.
+        encoding : str, default "UTF-8"
+
+        See Also
+        --------
+        DataFrame.to_orc : Write a DataFrame to the binary orc format.
+        DataFrame.to_parquet : Write a DataFrame to the binary parquet format.
+        DataFrame.to_csv : Write out to a csv file.
+
+        Examples
+        --------
+        >>> df = ps.DataFrame({'A': [1, 2, 3], 'B': [4, 5, 6]},
+        ...                   index=['a', 'b', 'c'])  # doctest: +SKIP
+        >>> df.to_hdf('data.h5', key='df', mode='w')  # doctest: +SKIP
+
+        We can add another object to the same file:
+
+        >>> s = ps.Series([1, 2, 3, 4])  # doctest: +SKIP
+        >>> s.to_hdf('data.h5', key='s')  # doctest: +SKIP
+        """
+        log_advice(
+            "`to_hdf` loads all data into the driver's memory. "
+            "It should only be used if the resulting DataFrame is expected to be small."
+        )
+        # Make sure locals() call is at the top of the function so we don't capture local variables.
+        args = locals()
+        psdf = self
+
+        if isinstance(self, ps.DataFrame):
+            f = pd.DataFrame.to_hdf
+        elif isinstance(self, ps.Series):
+            f = pd.Series.to_hdf
+        else:
+            raise TypeError(
+                "Constructor expects DataFrame or Series; however, " "got [%s]" % (self,)
+            )
+        return validate_arguments_and_invoke_function(
+            psdf._to_internal_pandas(), self.to_hdf, f, args
         )
 
     def mean(

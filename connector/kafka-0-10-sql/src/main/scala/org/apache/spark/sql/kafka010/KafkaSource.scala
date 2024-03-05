@@ -34,6 +34,7 @@ import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.kafka010.KafkaSourceProvider._
 import org.apache.spark.sql.types._
 import org.apache.spark.util.{Clock, SystemClock, Utils}
+import org.apache.spark.util.ArrayImplicits._
 
 /**
  * A [[Source]] that reads data from Kafka using the following design.
@@ -180,7 +181,7 @@ private[kafka010] class KafkaSource(
     latestPartitionOffsets = if (latest.isEmpty) None else Some(latest)
 
     val limits: Seq[ReadLimit] = limit match {
-      case rows: CompositeReadLimit => rows.getReadLimits
+      case rows: CompositeReadLimit => rows.getReadLimits.toImmutableArraySeq
       case rows => Seq(rows)
     }
 
@@ -343,12 +344,12 @@ private[kafka010] class KafkaSource(
   override def toString(): String = s"KafkaSourceV1[$kafkaReader]"
 
   /**
-   * If `failOnDataLoss` is true, this method will throw an `IllegalStateException`.
+   * If `failOnDataLoss` is true, this method will throw the exception.
    * Otherwise, just log a warning.
    */
-  private def reportDataLoss(message: String): Unit = {
+  private def reportDataLoss(message: String, getException: () => Throwable): Unit = {
     if (failOnDataLoss) {
-      throw new IllegalStateException(message + s". $INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_TRUE")
+      throw getException()
     } else {
       logWarning(message + s". $INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_FALSE")
     }

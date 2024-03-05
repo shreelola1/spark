@@ -34,6 +34,7 @@ import org.apache.spark.sql.kafka010.KafkaSourceProvider._
 import org.apache.spark.sql.kafka010.MockedSystemClock.currentMockSystemTime
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.util.{Clock, ManualClock, SystemClock, Utils}
+import org.apache.spark.util.ArrayImplicits._
 
 /**
  * A [[MicroBatchStream]] that reads data from Kafka.
@@ -131,7 +132,7 @@ private[kafka010] class KafkaMicroBatchStream(
     }
 
     val limits: Seq[ReadLimit] = readLimit match {
-      case rows: CompositeReadLimit => rows.getReadLimits
+      case rows: CompositeReadLimit => rows.getReadLimits.toImmutableArraySeq
       case rows => Seq(rows)
     }
 
@@ -301,12 +302,12 @@ private[kafka010] class KafkaMicroBatchStream(
   }
 
   /**
-   * If `failOnDataLoss` is true, this method will throw an `IllegalStateException`.
+   * If `failOnDataLoss` is true, this method will throw the exception.
    * Otherwise, just log a warning.
    */
-  private def reportDataLoss(message: String): Unit = {
+  private def reportDataLoss(message: String, getException: () => Throwable): Unit = {
     if (failOnDataLoss) {
-      throw new IllegalStateException(message + s". $INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_TRUE")
+      throw getException()
     } else {
       logWarning(message + s". $INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_FALSE")
     }

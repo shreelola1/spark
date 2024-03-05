@@ -18,6 +18,7 @@
 
 import tempfile
 import unittest
+import sys
 
 import numpy as np
 
@@ -228,7 +229,7 @@ class CrossValidatorTestsMixin:
             assert instance.getEstimatorParamMaps() == loaded_instance.getEstimatorParamMaps()
 
         # Test save / load
-        with tempfile.TemporaryDirectory() as tmp_dir:
+        with tempfile.TemporaryDirectory(prefix="test_crossvalidator_on_pipeline") as tmp_dir:
             cv.saveToLocal(f"{tmp_dir}/cv")
             loaded_cv = CrossValidator.loadFromLocal(f"{tmp_dir}/cv")
 
@@ -248,6 +249,9 @@ class CrossValidatorTestsMixin:
             np.testing.assert_allclose(cv_model.avgMetrics, loaded_cv_model.avgMetrics)
             np.testing.assert_allclose(cv_model.stdMetrics, loaded_cv_model.stdMetrics)
 
+    @unittest.skipIf(
+        sys.version_info > (3, 12), "SPARK-46078: Fails with dev torch with Python 3.12"
+    )
     def test_crossvalidator_with_fold_col(self):
         sk_dataset = load_breast_cancer()
 

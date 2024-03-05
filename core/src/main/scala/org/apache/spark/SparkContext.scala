@@ -22,7 +22,6 @@ import java.net.URI
 import java.util.{Arrays, Locale, Properties, ServiceLoader, UUID}
 import java.util.concurrent.{ConcurrentHashMap, ConcurrentMap}
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger, AtomicReference}
-import javax.ws.rs.core.UriBuilder
 
 import scala.collection.Map
 import scala.collection.concurrent.{Map => ScalaConcurrentMap}
@@ -71,6 +70,7 @@ import org.apache.spark.storage._
 import org.apache.spark.storage.BlockManagerMessages.{TriggerHeapHistogram, TriggerThreadDump}
 import org.apache.spark.ui.{ConsoleProgressBar, SparkUI}
 import org.apache.spark.util._
+import org.apache.spark.util.ArrayImplicits._
 import org.apache.spark.util.logging.DriverLogger
 
 /**
@@ -576,6 +576,8 @@ class SparkContext(config: SparkConf) extends Logging {
 
     // Initialize any plugins before the task scheduler is initialized.
     _plugins = PluginContainer(this, _resources.asJava)
+    _env.initializeShuffleManager()
+    _env.initializeMemoryManager(SparkContext.numDriverCores(master, conf))
 
     // Create and start the scheduler
     val (sched, ts) = SparkContext.createTaskScheduler(this, master)
@@ -1827,12 +1829,12 @@ class SparkContext(config: SparkConf) extends Logging {
         addedArchives
           .getOrElseUpdate(jobArtifactUUID, new ConcurrentHashMap[String, Long]().asScala)
           .putIfAbsent(
-          UriBuilder.fromUri(new URI(key)).fragment(uri.getFragment).build().toString,
+          Utils.getUriBuilder(new URI(key)).fragment(uri.getFragment).build().toString,
           timestamp).isEmpty) {
       logInfo(s"Added archive $path at $key with timestamp $timestamp")
       // If the scheme is file, use URI to simply copy instead of downloading.
       val uriToUse = if (!isLocal && scheme == "file") uri else new URI(key)
-      val uriToDownload = UriBuilder.fromUri(uriToUse).fragment(null).build()
+      val uriToDownload = Utils.getUriBuilder(uriToUse).fragment(null).build()
       val source = Utils.fetchFile(uriToDownload.toString, Utils.createTempDir(), conf,
         hadoopConfiguration, timestamp, useCache = false, shouldUntar = false)
       val dest = new File(
@@ -2271,7 +2273,7 @@ class SparkContext(config: SparkConf) extends Logging {
 
     if (listenerBus != null) {
       Utils.tryLogNonFatalError {
-        postApplicationEnd()
+        postApplicationEnd(exitCode)
       }
     }
     Utils.tryLogNonFatalError {
@@ -2607,6 +2609,17 @@ class SparkContext(config: SparkConf) extends Logging {
   }
 
   /**
+   * Cancel active jobs for the specified group, as well as the future jobs in this job group.
+   * Note: the maximum number of job groups that can be tracked is set by
+   * 'spark.scheduler.numCancelledJobGroupsToTrack'. Once the limit is reached and a new job group
+   * is to be added, the oldest job group tracked will be discarded.
+   */
+  def cancelJobGroupAndFutureJobs(groupId: String): Unit = {
+    assertNotStopped()
+    dagScheduler.cancelJobGroup(groupId, cancelFutureJobs = true)
+  }
+
+  /**
    * Cancel active jobs that have the specified tag. See `org.apache.spark.SparkContext.addJobTag`.
    *
    * @param tag The tag to be cancelled. Cannot contain ',' (comma) character.
@@ -2790,8 +2803,8 @@ class SparkContext(config: SparkConf) extends Logging {
   }
 
   /** Post the application end event */
-  private def postApplicationEnd(): Unit = {
-    listenerBus.post(SparkListenerApplicationEnd(System.currentTimeMillis))
+  private def postApplicationEnd(exitCode: Int): Unit = {
+    listenerBus.post(SparkListenerApplicationEnd(System.currentTimeMillis, Some(exitCode)))
   }
 
   /** Post the environment update event once the task scheduler is ready */
@@ -2817,7 +2830,7 @@ class SparkContext(config: SparkConf) extends Logging {
     val driverUpdates = new HashMap[(Int, Int), ExecutorMetrics]
     // In the driver, we do not track per-stage metrics, so use a dummy stage for the key
     driverUpdates.put(EventLoggingListener.DRIVER_STAGE_KEY, new ExecutorMetrics(currentMetrics))
-    val accumUpdates = new Array[(Long, Int, Int, Seq[AccumulableInfo])](0)
+    val accumUpdates = new Array[(Long, Int, Int, Seq[AccumulableInfo])](0).toImmutableArraySeq
     listenerBus.post(SparkListenerExecutorMetricsUpdate("driver", accumUpdates,
       driverUpdates))
   }

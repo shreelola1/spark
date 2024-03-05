@@ -16,9 +16,9 @@
  */
 package org.apache.spark.ui
 
-import javax.servlet.http.HttpServletRequest
-
 import scala.xml.{Node, Unparsed}
+
+import jakarta.servlet.http.HttpServletRequest
 
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
@@ -74,7 +74,7 @@ private[ui] class DriverLogPage(
       s"initLogPage('$logParams', $curLogLength, $startByte, $endByte, $logLength, $byteLength);"
 
     val content =
-      <script src={UIUtils.prependBaseUri(request, "/static/utils.js")}></script> ++
+      <script type="module" src={UIUtils.prependBaseUri(request, "/static/utils.js")}></script> ++
       <div>
         Logs at {logDir}
         {range}

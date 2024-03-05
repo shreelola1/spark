@@ -33,9 +33,10 @@ import org.apache.spark.sql.execution.command.DDLUtils
 import org.apache.spark.sql.execution.datasources.{CreateTable => CreateTableV1}
 import org.apache.spark.sql.execution.datasources.v2.FileDataSourceV2
 import org.apache.spark.sql.sources.InsertableRelation
-import org.apache.spark.sql.types.{AtomicType, StructType}
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.PartitioningUtils.normalizePartitionSpec
 import org.apache.spark.sql.util.SchemaUtils
+import org.apache.spark.util.ArrayImplicits._
 
 /**
  * Replaces [[UnresolvedRelation]]s if the plan is for direct query on files.
@@ -273,10 +274,11 @@ case class PreprocessTableCreation(catalog: SessionCatalog) extends Rule[Logical
           case transform: RewritableTransform =>
             val rewritten = transform.references().map { ref =>
               // Throws an exception if the reference cannot be resolved
-              val position = SchemaUtils.findColumnPosition(ref.fieldNames(), schema, resolver)
+              val position = SchemaUtils
+                .findColumnPosition(ref.fieldNames().toImmutableArraySeq, schema, resolver)
               FieldReference(SchemaUtils.getColumnName(position, schema))
             }
-            transform.withReferences(rewritten)
+            transform.withReferences(rewritten.toImmutableArraySeq)
           case other => other
         }
 
@@ -327,10 +329,13 @@ case class PreprocessTableCreation(catalog: SessionCatalog) extends Rule[Logical
         messageParameters = Map.empty)
     }
 
-    schema.filter(f => normalizedPartitionCols.contains(f.name)).map(_.dataType).foreach {
-      case _: AtomicType => // OK
-      case other => failAnalysis(s"Cannot use ${other.catalogString} for partition column")
-    }
+    schema
+      .filter(f => normalizedPartitionCols.contains(f.name))
+      .foreach { field =>
+        if (!PartitioningUtils.canPartitionOn(field.dataType)) {
+          throw QueryCompilationErrors.invalidPartitionColumnDataTypeError(field)
+        }
+      }
 
     normalizedPartitionCols
   }
@@ -362,7 +367,10 @@ case class PreprocessTableCreation(catalog: SessionCatalog) extends Rule[Logical
     }
   }
 
-  private def failAnalysis(msg: String) = throw new AnalysisException(msg)
+  private def failAnalysis(msg: String) = {
+    throw new AnalysisException(
+      errorClass = "_LEGACY_ERROR_TEMP_3072", messageParameters = Map("msg" -> msg))
+  }
 }
 
 /**

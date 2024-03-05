@@ -62,7 +62,7 @@ class GeneratorFunctionSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"stack(1.1, 1, 2, 3)\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"1.1\"",
         "inputType" -> "\"DECIMAL(2,1)\"",
         "requiredType" -> "\"INT\""),
@@ -290,10 +290,13 @@ class GeneratorFunctionSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"inline(array())\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"array()\"",
         "inputType" -> "\"ARRAY<VOID>\"",
-        "requiredType" -> "\"ARRAY<STRUCT>\"")
+        "requiredType" -> "\"ARRAY<STRUCT>\""),
+      context = ExpectedContext(
+        fragment = "inline",
+        callSitePattern = getCurrentClassCallSitePattern)
     )
   }
 
@@ -331,7 +334,10 @@ class GeneratorFunctionSuite extends QueryTest with SharedSparkSession {
       parameters = Map(
         "sqlExpr" -> "\"array(struct(a), struct(b))\"",
         "functionName" -> "`array`",
-        "dataType" -> "(\"STRUCT<a: INT>\" or \"STRUCT<b: INT>\")"))
+        "dataType" -> "(\"STRUCT<a: INT NOT NULL>\" or \"STRUCT<b: INT NOT NULL>\")"),
+      context = ExpectedContext(
+        fragment = "array",
+        callSitePattern = getCurrentClassCallSitePattern))
 
     checkAnswer(
       df.select(inline(array(struct(Symbol("a")), struct(Symbol("b").alias("a"))))),
@@ -346,7 +352,10 @@ class GeneratorFunctionSuite extends QueryTest with SharedSparkSession {
       parameters = Map(
         "sqlExpr" -> "\"array(struct(a), struct(2))\"",
         "functionName" -> "`array`",
-        "dataType" -> "(\"STRUCT<a: INT>\" or \"STRUCT<col1: INT>\")"))
+        "dataType" -> "(\"STRUCT<a: INT NOT NULL>\" or \"STRUCT<col1: INT NOT NULL>\")"),
+      context = ExpectedContext(
+        fragment = "array",
+        callSitePattern = getCurrentClassCallSitePattern))
 
     checkAnswer(
       df.select(inline(array(struct(Symbol("a")), struct(lit(2).alias("a"))))),
@@ -457,7 +466,7 @@ class GeneratorFunctionSuite extends QueryTest with SharedSparkSession {
   test("SPARK-38528: generator in stream of aggregate expressions") {
     val df = Seq(1, 2, 3).toDF("v")
     checkAnswer(
-      df.select(Stream(explode(array(min($"v"), max($"v"))), sum($"v")): _*),
+      df.select(LazyList(explode(array(min($"v"), max($"v"))), sum($"v")): _*),
       Row(1, 6) :: Row(3, 6) :: Nil)
   }
 

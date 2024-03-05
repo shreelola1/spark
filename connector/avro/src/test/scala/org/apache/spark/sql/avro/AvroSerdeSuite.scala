@@ -226,7 +226,9 @@ object AvroSerdeSuite {
         sql,
         isPositional(matchType),
         RebaseSpec(CORRECTED),
-        new NoopFilters)
+        new NoopFilters,
+        false,
+        "")
   }
 
   /**

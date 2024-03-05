@@ -56,7 +56,9 @@ package object state {
         numColsPrefixKey: Int,
         sessionState: SessionState,
         storeCoordinator: Option[StateStoreCoordinatorRef],
-        extraOptions: Map[String, String] = Map.empty)(
+        useColumnFamilies: Boolean = false,
+        extraOptions: Map[String, String] = Map.empty,
+        useMultipleValuesPerKey: Boolean = false)(
         storeUpdateFunction: (StateStore, Iterator[T]) => Iterator[U]): StateStoreRDD[T, U] = {
 
       val cleanedF = dataRDD.sparkContext.clean(storeUpdateFunction)
@@ -80,7 +82,9 @@ package object state {
         numColsPrefixKey,
         sessionState,
         storeCoordinator,
-        extraOptions)
+        useColumnFamilies,
+        extraOptions,
+        useMultipleValuesPerKey)
     }
 
     /** Map each partition of an RDD along with data in a [[ReadStateStore]]. */
@@ -91,6 +95,7 @@ package object state {
         numColsPrefixKey: Int,
         sessionState: SessionState,
         storeCoordinator: Option[StateStoreCoordinatorRef],
+        useColumnFamilies: Boolean = false,
         extraOptions: Map[String, String] = Map.empty)(
         storeReadFn: (ReadStateStore, Iterator[T]) => Iterator[U])
       : ReadStateStoreRDD[T, U] = {
@@ -115,6 +120,7 @@ package object state {
         numColsPrefixKey,
         sessionState,
         storeCoordinator,
+        useColumnFamilies,
         extraOptions)
     }
   }

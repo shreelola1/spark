@@ -20,12 +20,14 @@ package org.apache.spark.sql.execution.streaming.sources
 import scala.collection.mutable
 import scala.language.implicitConversions
 
+import org.apache.spark.{ExecutorDeadException, SparkException}
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.execution.SerializeFromObjectExec
 import org.apache.spark.sql.execution.streaming.MemoryStream
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.streaming._
+import org.apache.spark.util.ArrayImplicits._
 
 case class KV(key: Int, value: Long)
 
@@ -185,6 +187,31 @@ class ForeachBatchSinkSuite extends StreamTest {
     assertPlan(mem2, dsUntyped)
   }
 
+  test("foreachBatch user function error is classified") {
+    val mem = MemoryStream[Int]
+    val ds = mem.toDS().map(_ + 1)
+    mem.addData(1, 2, 3, 4, 5)
+
+    val funcEx = new IllegalAccessException("access error")
+    val wrapperEx = intercept[StreamingQueryException] {
+      val query = ds.writeStream.foreachBatch((_: Dataset[Int], _: Long) => throw funcEx).start()
+      query.awaitTermination()
+    }.getCause
+
+    // verify that we classified the exception
+    checkError(wrapperEx.asInstanceOf[SparkException], "FOREACH_BATCH_USER_FUNCTION_ERROR")
+    assert(wrapperEx.getCause == funcEx)
+
+    val sparkEx = ExecutorDeadException("network error")
+    val ex = intercept[StreamingQueryException] {
+      val query = ds.writeStream.foreachBatch((_: Dataset[Int], _: Long) => throw sparkEx).start()
+      query.awaitTermination()
+    }.getCause
+
+    // we didn't wrap the spark exception
+    assert(ex == sparkEx)
+  }
+
   // ============== Helper classes and methods =================
 
   private class ForeachBatchTester[T: Encoder](memoryStream: MemoryStream[Int]) {
@@ -220,7 +247,8 @@ class ForeachBatchSinkSuite extends StreamTest {
 
     def check(in: Int*)(out: T*): Test = Check(in, out)
     def checkMetrics: Test = CheckMetrics
-    def record(batchId: Long, ds: Dataset[T]): Unit = recordedOutput.put(batchId, ds.collect())
+    def record(batchId: Long, ds: Dataset[T]): Unit =
+      recordedOutput.put(batchId, ds.collect().toImmutableArraySeq)
     implicit def conv(x: (Int, Long)): KV = KV(x._1, x._2)
   }
 }

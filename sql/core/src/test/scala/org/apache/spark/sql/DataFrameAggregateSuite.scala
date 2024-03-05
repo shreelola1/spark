@@ -23,7 +23,7 @@ import scala.util.Random
 
 import org.scalatest.matchers.must.Matchers.the
 
-import org.apache.spark.{SparkException, SparkThrowable}
+import org.apache.spark.{SparkArithmeticException, SparkRuntimeException}
 import org.apache.spark.sql.catalyst.util.AUTO_GENERATED_ALIAS
 import org.apache.spark.sql.execution.WholeStageCodegenExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -37,6 +37,7 @@ import org.apache.spark.sql.test.SQLTestData.DecimalData
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.types.DayTimeIntervalType.{DAY, HOUR, MINUTE, SECOND}
 import org.apache.spark.sql.types.YearMonthIntervalType.{MONTH, YEAR}
+import org.apache.spark.unsafe.types.CalendarInterval
 
 case class Fact(date: Int, hour: Int, minute: Int, room_name: String, temp: Double)
 
@@ -159,6 +160,21 @@ class DataFrameAggregateSuite extends QueryTest
 
     val cube0 = df0.cube("date", "hour", "minute", "room_name").agg(Map("temp" -> "avg"))
     assert(cube0.where("date IS NULL").count() > 0)
+  }
+
+  test("SPARK-45929 support grouping set operation in dataframe api") {
+    checkAnswer(
+      courseSales
+        .groupingSets(
+          Seq(Seq(Column("course"), Column("year")), Seq()),
+          Column("course"),
+          Column("year"))
+        .agg(sum(Column("earnings")), grouping_id()),
+      Row("Java", 2012, 20000.0, 0) ::
+        Row("Java", 2013, 30000.0, 0) ::
+        Row("dotNET", 2012, 15000.0, 0) ::
+        Row("dotNET", 2013, 48000.0, 0) ::
+        Row(null, null, 113000.0, 3) :: Nil)
   }
 
   test("grouping and grouping_id") {
@@ -633,7 +649,10 @@ class DataFrameAggregateSuite extends QueryTest
         "functionName" -> "`collect_set`",
         "dataType" -> "\"MAP\"",
         "sqlExpr" -> "\"collect_set(b)\""
-      )
+      ),
+      context = ExpectedContext(
+        fragment = "collect_set",
+        callSitePattern = getCurrentClassCallSitePattern)
     )
   }
 
@@ -706,7 +725,8 @@ class DataFrameAggregateSuite extends QueryTest
         testData.groupBy(sum($"key")).count()
       },
       errorClass = "GROUP_BY_AGGREGATE",
-      parameters = Map("sqlExpr" -> "sum(key)")
+      parameters = Map("sqlExpr" -> "sum(key)"),
+      context = ExpectedContext(fragment = "sum", callSitePattern = getCurrentClassCallSitePattern)
     )
   }
 
@@ -1069,6 +1089,39 @@ class DataFrameAggregateSuite extends QueryTest
     )
   }
 
+  test("SPARK-45599: Neither 0.0 nor -0.0 should be dropped when computing percentile") {
+    // To reproduce the bug described in SPARK-45599, we need exactly these rows in roughly
+    // this order in a DataFrame with exactly 1 partition.
+    // scalastyle:off line.size.limit
+    // See: https://issues.apache.org/jira/browse/SPARK-45599?focusedCommentId=17806954&page=com.atlassian.jira.plugin.system.issuetabpanels%3Acomment-tabpanel#comment-17806954
+    // scalastyle:on line.size.limit
+    val spark45599Repro: DataFrame = Seq(
+        0.0,
+        2.0,
+        153.0,
+        168.0,
+        3252411229536261.0,
+        7.205759403792794e+16,
+        1.7976931348623157e+308,
+        0.25,
+        Double.NaN,
+        Double.NaN,
+        -0.0,
+        -128.0,
+        Double.NaN,
+        Double.NaN
+      ).toDF("val").coalesce(1)
+
+    checkAnswer(
+      spark45599Repro.agg(
+        percentile(col("val"), lit(0.1))
+      ),
+      // With the buggy implementation of OpenHashSet, this returns `0.050000000000000044`
+      // instead of `-0.0`.
+      List(Row(-0.0))
+    )
+  }
+
   test("any_value") {
     checkAnswer(
       courseSales.groupBy("course").agg(
@@ -1136,7 +1189,7 @@ class DataFrameAggregateSuite extends QueryTest
           sqlState = None,
           parameters = Map(
             "sqlExpr" -> "\"count_if(x)\"",
-            "paramIndex" -> "1",
+            "paramIndex" -> "first",
             "inputSql" -> "\"x\"",
             "inputType" -> "\"STRING\"",
             "requiredType" -> "\"BOOLEAN\""),
@@ -1299,10 +1352,11 @@ class DataFrameAggregateSuite extends QueryTest
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"col[a]\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"a\"",
         "inputType" -> "\"STRING\"",
-        "requiredType" -> "\"INTEGRAL\""))
+        "requiredType" -> "\"INTEGRAL\""),
+      context = ExpectedContext(fragment = "$", callSitePattern = getCurrentClassCallSitePattern))
   }
 
   test("SPARK-34716: Support ANSI SQL intervals by the aggregate function `sum`") {
@@ -1430,17 +1484,15 @@ class DataFrameAggregateSuite extends QueryTest
     val df2 = Seq((Period.ofMonths(Int.MaxValue), Duration.ofDays(106751991)),
       (Period.ofMonths(10), Duration.ofDays(10)))
       .toDF("year-month", "day")
-    val error = intercept[SparkException] {
+    val error = intercept[SparkArithmeticException] {
       checkAnswer(df2.select(sum($"year-month")), Nil)
     }
-    assert(error.toString contains
-      "SparkArithmeticException: [INTERVAL_ARITHMETIC_OVERFLOW] integer overflow")
+    assert(error.getMessage contains "[INTERVAL_ARITHMETIC_OVERFLOW] integer overflow")
 
-    val error2 = intercept[SparkException] {
+    val error2 = intercept[SparkArithmeticException] {
       checkAnswer(df2.select(sum($"day")), Nil)
     }
-    assert(error2.toString contains
-      "SparkArithmeticException: [INTERVAL_ARITHMETIC_OVERFLOW] long overflow")
+    assert(error2.getMessage contains "[INTERVAL_ARITHMETIC_OVERFLOW] long overflow")
   }
 
   test("SPARK-34837: Support ANSI SQL intervals by the aggregate function `avg`") {
@@ -1567,17 +1619,15 @@ class DataFrameAggregateSuite extends QueryTest
     val df2 = Seq((Period.ofMonths(Int.MaxValue), Duration.ofDays(106751991)),
       (Period.ofMonths(10), Duration.ofDays(10)))
       .toDF("year-month", "day")
-    val error = intercept[SparkException] {
+    val error = intercept[SparkArithmeticException] {
       checkAnswer(df2.select(avg($"year-month")), Nil)
     }
-    assert(error.toString contains
-      "SparkArithmeticException: [INTERVAL_ARITHMETIC_OVERFLOW] integer overflow")
+    assert(error.getMessage contains "[INTERVAL_ARITHMETIC_OVERFLOW] integer overflow")
 
-    val error2 = intercept[SparkException] {
+    val error2 = intercept[SparkArithmeticException] {
       checkAnswer(df2.select(avg($"day")), Nil)
     }
-    assert(error2.toString contains
-      "SparkArithmeticException: [INTERVAL_ARITHMETIC_OVERFLOW] long overflow")
+    assert(error2.getMessage contains "[INTERVAL_ARITHMETIC_OVERFLOW] long overflow")
 
     val df3 = intervalData.filter($"class" > 4)
     val avgDF3 = df3.select(avg($"year-month"), avg($"day"))
@@ -1617,7 +1667,7 @@ class DataFrameAggregateSuite extends QueryTest
   }
 
   test("SPARK-38221: group by stream of complex expressions should not fail") {
-    val df = Seq(1).toDF("id").groupBy(Stream($"id" + 1, $"id" + 2): _*).sum("id")
+    val df = Seq(1).toDF("id").groupBy(LazyList($"id" + 1, $"id" + 2): _*).sum("id")
     checkAnswer(df, Row(2, 3, 1))
   }
 
@@ -1860,13 +1910,13 @@ class DataFrameAggregateSuite extends QueryTest
 
     // validate that the functions error out when lgConfigK < 4 or > 24
     checkError(
-      exception = intercept[SparkException] {
-        val res = df1.groupBy("id")
+      exception = intercept[SparkRuntimeException] {
+        df1.groupBy("id")
           .agg(
             hll_sketch_agg("value", 1).as("hllsketch")
           )
-        checkAnswer(res, Nil)
-      }.getCause.asInstanceOf[SparkThrowable],
+          .collect()
+      },
       errorClass = "HLL_INVALID_LG_K",
       parameters = Map(
         "function" -> "`hll_sketch_agg`",
@@ -1876,13 +1926,13 @@ class DataFrameAggregateSuite extends QueryTest
       ))
 
     checkError(
-      exception = intercept[SparkException] {
-        val res = df1.groupBy("id")
+      exception = intercept[SparkRuntimeException] {
+        df1.groupBy("id")
           .agg(
             hll_sketch_agg("value", 25).as("hllsketch")
           )
-        checkAnswer(res, Nil)
-      }.getCause.asInstanceOf[SparkThrowable],
+          .collect()
+      },
       errorClass = "HLL_INVALID_LG_K",
       parameters = Map(
         "function" -> "`hll_sketch_agg`",
@@ -1893,7 +1943,7 @@ class DataFrameAggregateSuite extends QueryTest
 
     // validate that unions error out by default for different lgConfigK sketches
     checkError(
-      exception = intercept[SparkException] {
+      exception = intercept[SparkRuntimeException] {
         val i1 = df1.groupBy("id")
           .agg(
             hll_sketch_agg("value").as("hllsketch_left")
@@ -1902,9 +1952,10 @@ class DataFrameAggregateSuite extends QueryTest
           .agg(
             hll_sketch_agg("value", 20).as("hllsketch_right")
           )
-        val res = i1.join(i2).withColumn("union", hll_union("hllsketch_left", "hllsketch_right"))
-        checkAnswer(res, Nil)
-      }.getCause.asInstanceOf[SparkThrowable],
+        i1.join(i2)
+          .withColumn("union", hll_union("hllsketch_left", "hllsketch_right"))
+          .collect()
+      },
       errorClass = "HLL_UNION_DIFFERENT_LG_K",
       parameters = Map(
         "left" -> "12",
@@ -1913,7 +1964,7 @@ class DataFrameAggregateSuite extends QueryTest
       ))
 
     checkError(
-      exception = intercept[SparkException] {
+      exception = intercept[SparkRuntimeException] {
         val i1 = df1.groupBy("id")
           .agg(
             hll_sketch_agg("value").as("hllsketch")
@@ -1922,12 +1973,12 @@ class DataFrameAggregateSuite extends QueryTest
           .agg(
             hll_sketch_agg("value", 20).as("hllsketch")
           )
-        val res = i1.union(i2).groupBy("id")
+        i1.union(i2).groupBy("id")
           .agg(
             hll_union_agg("hllsketch")
           )
-        checkAnswer(res, Nil)
-      }.getCause.asInstanceOf[SparkThrowable],
+          .collect()
+      },
       errorClass = "HLL_UNION_DIFFERENT_LG_K",
       parameters = Map(
         "left" -> "12",
@@ -1952,7 +2003,7 @@ class DataFrameAggregateSuite extends QueryTest
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"hll_sketch_agg(value, text)\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"text\"",
         "inputType" -> "\"STRING\"",
         "requiredType" -> "\"INT\""
@@ -1981,7 +2032,7 @@ class DataFrameAggregateSuite extends QueryTest
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"hll_union_agg(sketch, Hll_4)\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"Hll_4\"",
         "inputType" -> "\"STRING\"",
         "requiredType" -> "\"BOOLEAN\""
@@ -1993,8 +2044,8 @@ class DataFrameAggregateSuite extends QueryTest
 
     // validate that unions error out by default for different lgConfigK sketches
     checkError(
-      exception = intercept[SparkException] {
-        val res = sql(
+      exception = intercept[SparkRuntimeException] {
+        sql(
           """with cte1 as (
             |select
             | id,
@@ -2018,9 +2069,8 @@ class DataFrameAggregateSuite extends QueryTest
             | hll_union(cte1.sketch, cte2.sketch) as sketch
             |from
             | cte1 join cte2 on cte1.id = cte2.id
-            |""".stripMargin)
-        checkAnswer(res, Nil)
-      }.getCause.asInstanceOf[SparkThrowable],
+            |""".stripMargin).collect()
+      },
       errorClass = "HLL_UNION_DIFFERENT_LG_K",
       parameters = Map(
         "left" -> "12",
@@ -2029,8 +2079,8 @@ class DataFrameAggregateSuite extends QueryTest
       ))
 
     checkError(
-      exception = intercept[SparkException] {
-        val res = sql(
+      exception = intercept[SparkRuntimeException] {
+        sql(
           """with cte1 as (
             |select
             | id,
@@ -2055,9 +2105,8 @@ class DataFrameAggregateSuite extends QueryTest
             |from
             | (select * from cte1 union all select * from cte2)
             |group by 1
-            |""".stripMargin)
-        checkAnswer(res, Nil)
-      }.getCause.asInstanceOf[SparkThrowable],
+            |""".stripMargin).collect()
+      },
       errorClass = "HLL_UNION_DIFFERENT_LG_K",
       parameters = Map(
         "left" -> "12",
@@ -2104,6 +2153,52 @@ class DataFrameAggregateSuite extends QueryTest
         select(hll_sketch_estimate(hll_union_agg(col("sketch"), lit(true)))),
       Seq(Row(1))
     )
+  }
+
+  test("SPARK-46536 Support GROUP BY CalendarIntervalType") {
+    val numRows = 50
+    val configurations = Seq(
+      Seq.empty[(String, String)], // hash aggregate is used by default
+      Seq(SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN",
+        "spark.sql.TungstenAggregate.testFallbackStartsAt" -> "1, 10"),
+      Seq("spark.sql.test.forceApplyObjectHashAggregate" -> "true"),
+      Seq(
+        "spark.sql.test.forceApplyObjectHashAggregate" -> "true",
+        SQLConf.OBJECT_AGG_SORT_BASED_FALLBACK_THRESHOLD.key -> "1"),
+      Seq("spark.sql.test.forceApplySortAggregate" -> "true")
+    )
+
+    val dfSame = (0 until numRows)
+      .map(_ => Tuple1(new CalendarInterval(1, 2, 3)))
+      .toDF("c0")
+
+    val dfDifferent = (0 until numRows)
+      .map(i => Tuple1(new CalendarInterval(i, i, i)))
+      .toDF("c0")
+
+    for (conf <- configurations) {
+      withSQLConf(conf: _*) {
+        assert(createAggregate(dfSame).count() == 1)
+        assert(createAggregate(dfDifferent).count() == numRows)
+      }
+    }
+
+    def createAggregate(df: DataFrame): DataFrame = df.groupBy("c0").agg(count("*"))
+  }
+
+  test("SPARK-46779: Group by subquery with a cached relation") {
+    withTempView("data") {
+      sql(
+        """create or replace temp view data(c1, c2) as values
+          |(1, 2),
+          |(1, 3),
+          |(3, 7)""".stripMargin)
+      sql("cache table data")
+      val df = sql(
+        """select c1, (select count(*) from data d1 where d1.c1 = d2.c1), count(c2)
+          |from data d2 group by all""".stripMargin)
+      checkAnswer(df, Row(1, 2, 2) :: Row(3, 1, 1) :: Nil)
+    }
   }
 }
 

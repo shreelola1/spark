@@ -47,9 +47,10 @@ from pyspark.sql.types import (
     BinaryType,
     BooleanType,
     NullType,
+    VariantType,
     UserDefinedType,
 )
-from pyspark.errors import PySparkAssertionError
+from pyspark.errors import PySparkAssertionError, PySparkValueError
 
 import pyspark.sql.connect.proto as pb2
 
@@ -138,7 +139,7 @@ def pyspark_types_to_proto_types(data_type: DataType) -> pb2.DataType:
     if isinstance(data_type, NullType):
         ret.null.CopyFrom(pb2.DataType.NULL())
     elif isinstance(data_type, StringType):
-        ret.string.CopyFrom(pb2.DataType.String())
+        ret.string.collation_id = data_type.collationId
     elif isinstance(data_type, BooleanType):
         ret.boolean.CopyFrom(pb2.DataType.Boolean())
     elif isinstance(data_type, BinaryType):
@@ -190,6 +191,8 @@ def pyspark_types_to_proto_types(data_type: DataType) -> pb2.DataType:
     elif isinstance(data_type, ArrayType):
         ret.array.element_type.CopyFrom(pyspark_types_to_proto_types(data_type.elementType))
         ret.array.contains_null = data_type.containsNull
+    elif isinstance(data_type, VariantType):
+        ret.variant.CopyFrom(pb2.DataType.Variant())
     elif isinstance(data_type, UserDefinedType):
         json_value = data_type.jsonValue()
         ret.udt.type = "udt"
@@ -205,7 +208,10 @@ def pyspark_types_to_proto_types(data_type: DataType) -> pb2.DataType:
         data_type_string = data_type.data_type_string
         ret.unparsed.data_type_string = data_type_string
     else:
-        raise Exception(f"Unsupported data type {data_type}")
+        raise PySparkValueError(
+            error_class="UNSUPPORTED_OPERATION",
+            message_parameters={"operation": f"data type {data_type}"},
+        )
     return ret
 
 
@@ -233,7 +239,7 @@ def proto_schema_to_pyspark_data_type(schema: pb2.DataType) -> DataType:
         s = schema.decimal.scale if schema.decimal.HasField("scale") else 0
         return DecimalType(precision=p, scale=s)
     elif schema.HasField("string"):
-        return StringType()
+        return StringType(schema.string.collation_id)
     elif schema.HasField("char"):
         return CharType(schema.char.length)
     elif schema.HasField("var_char"):
@@ -294,6 +300,8 @@ def proto_schema_to_pyspark_data_type(schema: pb2.DataType) -> DataType:
             proto_schema_to_pyspark_data_type(schema.map.value_type),
             schema.map.value_contains_null,
         )
+    elif schema.HasField("variant"):
+        return VariantType()
     elif schema.HasField("udt"):
         assert schema.udt.type == "udt"
         json_value = {}
@@ -303,4 +311,7 @@ def proto_schema_to_pyspark_data_type(schema: pb2.DataType) -> DataType:
             json_value["serializedClass"] = schema.udt.serialized_python_class
         return UserDefinedType.fromJson(json_value)
     else:
-        raise Exception(f"Unsupported data type {schema}")
+        raise PySparkValueError(
+            error_class="UNSUPPORTED_OPERATION",
+            message_parameters={"operation": f"data type {schema}"},
+        )

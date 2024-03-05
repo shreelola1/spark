@@ -325,10 +325,18 @@ case class ExpressionEncoder[T](
   assert(serializer.forall(_.references.isEmpty), "serializer cannot reference any attributes.")
   assert(serializer.flatMap { ser =>
     val boundRefs = ser.collect { case b: BoundReference => b }
-    assert(boundRefs.nonEmpty,
-      "each serializer expression should contain at least one `BoundReference`")
+    assert(boundRefs.nonEmpty || isEmptyStruct(ser),
+      "each serializer expression should contain at least one `BoundReference` or it " +
+      "should be an empty struct. This is required to ensure that there is a reference point " +
+      "for the serialized object or that the serialized object is intentionally left empty."
+    )
     boundRefs
   }.distinct.length <= 1, "all serializer expressions must use the same BoundReference.")
+
+  private def isEmptyStruct(expr: NamedExpression): Boolean = expr.dataType match {
+    case struct: StructType => struct.isEmpty
+    case _ => false
+  }
 
   /**
    * Returns a new copy of this encoder, where the `deserializer` is resolved and bound to the
@@ -400,7 +408,7 @@ case class ExpressionEncoder[T](
    * has not been done already in places where we plan to do later composition of encoders.
    */
   def assertUnresolved(): Unit = {
-    (deserializer +:  serializer).foreach(_.foreach {
+    (deserializer +: serializer).foreach(_.foreach {
       case a: AttributeReference if a.name != "loopVar" =>
         throw QueryExecutionErrors.notExpectedUnresolvedEncoderError(a)
       case _ =>

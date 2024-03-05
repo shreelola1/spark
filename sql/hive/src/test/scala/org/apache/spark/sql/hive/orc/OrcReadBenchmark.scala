@@ -21,8 +21,6 @@ import java.io.File
 
 import scala.util.Random
 
-import org.apache.hadoop.hive.ql.io.orc.CompressionKind
-
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, SparkSession}
@@ -48,7 +46,6 @@ object OrcReadBenchmark extends SqlBasedBenchmark {
 
   override def getSparkSession: SparkSession = {
     val conf = new SparkConf()
-    conf.set("orc.compression", CompressionKind.SNAPPY.name())
 
     val sparkSession = SparkSession.builder()
       .master("local[1]")

@@ -34,8 +34,6 @@ import org.apache.parquet.example.data.Group
 import org.apache.parquet.example.data.simple.{SimpleGroup, SimpleGroupFactory}
 import org.apache.parquet.hadoop._
 import org.apache.parquet.hadoop.example.ExampleParquetWriter
-import org.apache.parquet.hadoop.metadata.CompressionCodecName
-import org.apache.parquet.hadoop.metadata.CompressionCodecName.GZIP
 import org.apache.parquet.io.api.Binary
 import org.apache.parquet.schema.{MessageType, MessageTypeParser}
 
@@ -394,7 +392,7 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
     withParquetDataFrame(data) { df =>
       // Structs are converted to `Row`s
       checkAnswer(df, data.map { case Tuple1(m) =>
-        Row(m.mapValues(struct => Row(struct.productIterator.toSeq: _*)))
+        Row(m.transform((_, struct) => Row(struct.productIterator.toSeq: _*)))
       })
     }
   }
@@ -845,7 +843,7 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
 
     val data = (0 until 10).map(i => (i, i.toString))
 
-    def checkCompressionCodec(codec: CompressionCodecName): Unit = {
+    def checkCompressionCodec(codec: ParquetCompressionCodec): Unit = {
       withSQLConf(SQLConf.PARQUET_COMPRESSION.key -> codec.name()) {
         withParquetFile(data) { path =>
           assertResult(spark.conf.get(SQLConf.PARQUET_COMPRESSION).toUpperCase(Locale.ROOT)) {
@@ -857,12 +855,9 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
 
     // Checks default compression codec
     checkCompressionCodec(
-      CompressionCodecName.fromConf(spark.conf.get(SQLConf.PARQUET_COMPRESSION)))
+      ParquetCompressionCodec.fromString(spark.conf.get(SQLConf.PARQUET_COMPRESSION)))
 
-    checkCompressionCodec(CompressionCodecName.UNCOMPRESSED)
-    checkCompressionCodec(CompressionCodecName.GZIP)
-    checkCompressionCodec(CompressionCodecName.SNAPPY)
-    checkCompressionCodec(CompressionCodecName.ZSTD)
+    ParquetCompressionCodec.availableCodecs.asScala.foreach(checkCompressionCodec(_))
   }
 
   private def createParquetWriter(
@@ -878,7 +873,7 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
       .withDictionaryEncoding(dictionaryEnabled)
       .withType(schema)
       .withWriterVersion(PARQUET_1_0)
-      .withCompressionCodec(GZIP)
+      .withCompressionCodec(ParquetCompressionCodec.GZIP.getCompressionCodec)
       .withRowGroupSize(1024 * 1024)
       .withPageSize(pageSize)
       .withDictionaryPageSize(dictionaryPageSize)
@@ -1075,17 +1070,6 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
     }
   }
 
-  test("SPARK-35640: int as long should throw schema incompatible error") {
-    val data = (1 to 4).map(i => Tuple1(i))
-    val readSchema = StructType(Seq(StructField("_1", DataTypes.LongType)))
-
-    withParquetFile(data) { path =>
-      val errMsg = intercept[Exception](spark.read.schema(readSchema).parquet(path).collect())
-          .getMessage
-      assert(errMsg.contains("Parquet column cannot be converted in file"))
-    }
-  }
-
   test("write metadata") {
     val hadoopConf = spark.sessionState.newHadoopConf()
     withTempPath { file =>
@@ -1229,8 +1213,9 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
       withTempPath { dir =>
         val m1 = intercept[SparkException] {
           spark.range(1).coalesce(1).write.options(extraOptions).parquet(dir.getCanonicalPath)
-        }.getMessage
-        assert(m1.contains("Intentional exception for testing purposes"))
+        }
+        assert(m1.getErrorClass == "TASK_WRITE_FAILED")
+        assert(m1.getCause.getMessage.contains("Intentional exception for testing purposes"))
       }
 
       withTempPath { dir =>
@@ -1238,8 +1223,9 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
           val df = spark.range(1).select($"id" as Symbol("a"), $"id" as Symbol("b"))
             .coalesce(1)
           df.write.partitionBy("a").options(extraOptions).parquet(dir.getCanonicalPath)
-        }.getMessage
-        assert(m2.contains("Intentional exception for testing purposes"))
+        }
+        assert(m2.getErrorClass == "TASK_WRITE_FAILED")
+        assert(m2.getCause.getMessage.contains("Intentional exception for testing purposes"))
       }
     }
   }
@@ -1380,7 +1366,7 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
       spark.createDataFrame(data).repartition(1).write.parquet(dir.getCanonicalPath)
       val file = TestUtils.listDirectory(dir).head;
       {
-        val conf = sqlContext.conf
+        val conf = spark.sessionState.conf
         val reader = new VectorizedParquetRecordReader(
           conf.offHeapColumnVectorEnabled, conf.parquetVectorizedReaderBatchSize)
         try {
@@ -1399,7 +1385,7 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
 
       // Project just one column
       {
-        val conf = sqlContext.conf
+        val conf = spark.sessionState.conf
         val reader = new VectorizedParquetRecordReader(
           conf.offHeapColumnVectorEnabled, conf.parquetVectorizedReaderBatchSize)
         try {
@@ -1417,7 +1403,7 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
 
       // Project columns in opposite order
       {
-        val conf = sqlContext.conf
+        val conf = spark.sessionState.conf
         val reader = new VectorizedParquetRecordReader(
           conf.offHeapColumnVectorEnabled, conf.parquetVectorizedReaderBatchSize)
         try {
@@ -1436,7 +1422,7 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
 
       // Empty projection
       {
-        val conf = sqlContext.conf
+        val conf = spark.sessionState.conf
         val reader = new VectorizedParquetRecordReader(
           conf.offHeapColumnVectorEnabled, conf.parquetVectorizedReaderBatchSize)
         try {
@@ -1478,7 +1464,7 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
 
       dataTypes.zip(constantValues).foreach { case (dt, v) =>
         val schema = StructType(StructField("pcol", dt) :: Nil)
-        val conf = sqlContext.conf
+        val conf = spark.sessionState.conf
         val vectorizedReader = new VectorizedParquetRecordReader(
           conf.offHeapColumnVectorEnabled, conf.parquetVectorizedReaderBatchSize)
         val partitionValues = new GenericInternalRow(Array(v))
@@ -1507,9 +1493,12 @@ class ParquetIOSuite extends QueryTest with ParquetTest with SharedSparkSession 
   }
 
   test("SPARK-18433: Improve DataSource option keys to be more case-insensitive") {
-    withSQLConf(SQLConf.PARQUET_COMPRESSION.key -> "snappy") {
-      val option = new ParquetOptions(Map("Compression" -> "uncompressed"), spark.sessionState.conf)
-      assert(option.compressionCodecClassName == "UNCOMPRESSED")
+    withSQLConf(
+      SQLConf.PARQUET_COMPRESSION.key -> ParquetCompressionCodec.SNAPPY.lowerCaseName()) {
+      val option = new ParquetOptions(
+        Map("Compression" -> ParquetCompressionCodec.UNCOMPRESSED.lowerCaseName()),
+        spark.sessionState.conf)
+      assert(option.compressionCodecClassName == ParquetCompressionCodec.UNCOMPRESSED.name)
     }
   }
 

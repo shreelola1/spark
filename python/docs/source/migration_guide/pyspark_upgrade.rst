@@ -54,6 +54,23 @@ Upgrading from PySpark 3.5 to 4.0
 * In Spark 4.0, ``DataFrame.to_spark_io`` has been removed from pandas API on Spark, use ``DataFrame.spark.to_spark_io`` instead.
 * In Spark 4.0, ``Series.is_monotonic`` and ``Index.is_monotonic`` have been removed from pandas API on Spark, use ``Series.is_monotonic_increasing`` or ``Index.is_monotonic_increasing`` instead respectively.
 * In Spark 4.0, ``DataFrame.get_dtype_counts`` has been removed from pandas API on Spark, use ``DataFrame.dtypes.value_counts()`` instead.
+* In Spark 4.0, ``encoding`` parameter from ``DataFrame.to_excel`` and ``Series.to_excel`` have been removed from pandas API on Spark.
+* In Spark 4.0, ``verbose`` parameter from ``DataFrame.to_excel`` and ``Series.to_excel`` have been removed from pandas API on Spark.
+* In Spark 4.0, ``mangle_dupe_cols`` parameter from ``read_csv`` has been removed from pandas API on Spark.
+* In Spark 4.0, ``DataFrameGroupBy.backfill`` has been removed from pandas API on Spark, use ``DataFrameGroupBy.bfill`` instead.
+* In Spark 4.0, ``DataFrameGroupBy.pad`` has been removed from pandas API on Spark, use ``DataFrameGroupBy.ffill`` instead.
+* In Spark 4.0, ``Index.is_all_dates`` has been removed from pandas API on Spark.
+* In Spark 4.0, ``convert_float`` parameter from ``read_excel`` has been removed from pandas API on Spark.
+* In Spark 4.0, ``mangle_dupe_cols`` parameter from ``read_excel`` has been removed from pandas API on Spark.
+* In Spark 4.0, ``DataFrame.koalas`` has been removed from pandas API on Spark, use ``DataFrame.pandas_on_spark`` instead.
+* In Spark 4.0, ``DataFrame.to_koalas`` has been removed from PySpark, use ``DataFrame.pandas_api`` instead.
+* In Spark 4.0, ``DataFrame.to_pandas_on_spark`` has been removed from PySpark, use ``DataFrame.pandas_api`` instead.
+* In Spark 4.0, ``DatatimeIndex.week`` and ``DatatimeIndex.weekofyear`` have been removed from Pandas API on Spark, use ``DatetimeIndex.isocalendar().week`` instead.
+* In Spark 4.0, ``Series.dt.week`` and ``Series.dt.weekofyear`` have been removed from Pandas API on Spark, use ``Series.dt.isocalendar().week`` instead.
+* In Spark 4.0, when applying ``astype`` to a decimal type object, the existing missing value is changed to ``True`` instead of ``False`` from Pandas API on Spark.
+* In Spark 4.0, ``pyspark.testing.assertPandasOnSparkEqual`` has been removed from Pandas API on Spark, use ``pyspark.pandas.testing.assert_frame_equal`` instead.
+* In Spark 4.0, the aliases ``Y``, ``M``, ``H``, ``T``, ``S`` have been deprecated from Pandas API on Spark, use ``YE``, ``ME``, ``h``, ``min``, ``s`` instead respectively.
+
 
 
 Upgrading from PySpark 3.3 to 3.4

@@ -412,7 +412,10 @@ class DataFrameWindowFunctionsSuite extends QueryTest
       errorClass = "UNRESOLVED_COLUMN.WITH_SUGGESTION",
       parameters = Map(
         "objectName" -> "`invalid`",
-        "proposal" -> "`value`, `key`"))
+        "proposal" -> "`value`, `key`"),
+      context = ExpectedContext(
+        fragment = "count",
+        callSitePattern = getCurrentClassCallSitePattern))
   }
 
   test("numerical aggregate functions on string column") {
@@ -1232,7 +1235,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
     ).toDF("a", "b", "c")
 
     val w = Window.partitionBy("a").orderBy("b")
-    val selectExprs = Stream(
+    val selectExprs = LazyList(
       sum("c").over(w.rowsBetween(Window.unboundedPreceding, Window.currentRow)).as("sumc"),
       avg("c").over(w.rowsBetween(Window.unboundedPreceding, Window.currentRow)).as("avgc")
     )
@@ -1633,6 +1636,33 @@ class DataFrameWindowFunctionsSuite extends QueryTest
           Row(7, "Mark", 3, 2023, 2, Array(6, 3, 3)),
           Row(5, "Dave", 3, 2024, 2, Array(7, 7, 3, 3)),
           Row(8, "Mark", 3, 2024, 2, Array(7, 7, 3, 3))
+        ))
+      }
+    }
+  }
+
+  test("SPARK-46941: Can't insert window group limit node for top-k computation if contains " +
+    "SizeBasedWindowFunction") {
+    val df = Seq(
+      (1, "Dave", 1, 2020),
+      (2, "Mark", 2, 2020),
+      (3, "Amy", 3, 2020),
+      (4, "Dave", 1, 2021),
+      (5, "Mark", 2, 2021),
+      (6, "Amy", 3, 2021),
+      (7, "John", 4, 2021)).toDF("id", "name", "score", "year")
+
+    val window = Window.partitionBy($"year").orderBy($"score".desc)
+
+    Seq(-1, 100).foreach { threshold =>
+      withSQLConf(SQLConf.WINDOW_GROUP_LIMIT_THRESHOLD.key -> threshold.toString) {
+        val df2 = df
+          .withColumn("rank", rank().over(window))
+          .withColumn("percent_rank", percent_rank().over(window))
+          .sort($"year")
+        checkAnswer(df2.filter("rank=2"), Seq(
+          Row(2, "Mark", 2, 2020, 2, 0.5),
+          Row(6, "Amy", 3, 2021, 2, 0.3333333333333333)
         ))
       }
     }

@@ -23,10 +23,16 @@ import os
 import pickle
 import sys
 import unittest
+from dataclasses import dataclass, asdict
 
 from pyspark.sql import Row
 from pyspark.sql import functions as F
-from pyspark.errors import AnalysisException, PySparkTypeError, PySparkValueError
+from pyspark.errors import (
+    AnalysisException,
+    PySparkTypeError,
+    PySparkValueError,
+    PySparkRuntimeError,
+)
 from pyspark.sql.types import (
     DataType,
     ByteType,
@@ -51,6 +57,7 @@ from pyspark.sql.types import (
     BinaryType,
     BooleanType,
     NullType,
+    VariantType,
 )
 from pyspark.sql.types import (
     _array_signed_int_typecode_ctype_mappings,
@@ -117,6 +124,16 @@ class TypesTestsMixin:
     def test_infer_schema(self):
         d = [Row(l=[], d={}, s=None), Row(l=[Row(a=1, b="s")], d={"key": Row(c=1.0, d="2")}, s="")]
         rdd = self.sc.parallelize(d)
+
+        with self.assertRaises(PySparkTypeError) as pe:
+            self.spark.createDataFrame(rdd, schema=123)
+
+        self.check_error(
+            exception=pe.exception,
+            error_class="NOT_LIST_OR_NONE_OR_STRUCT",
+            message_parameters={"arg_name": "schema", "arg_type": "int"},
+        )
+
         df = self.spark.createDataFrame(rdd)
         self.assertEqual([], df.rdd.map(lambda r: r.l).first())
         self.assertEqual([None, ""], df.rdd.map(lambda r: r.s).collect())
@@ -396,6 +413,17 @@ class TypesTestsMixin:
         df = self.spark.createDataFrame([{"a": 1}], ["b"])
         self.assertEqual(df.columns, ["b"])
 
+    def test_create_dataframe_from_dataclasses(self):
+        @dataclass
+        class User:
+            name: str
+            age: int
+            is_active: bool
+
+        user = User(name="John", age=30, is_active=True)
+        r = self.spark.createDataFrame([user]).first()
+        self.assertEqual(asdict(user), r.asDict())
+
     def test_negative_decimal(self):
         try:
             self.spark.sql("set spark.sql.legacy.allowNegativeScaleOfDecimal=true")
@@ -506,6 +534,19 @@ class TypesTestsMixin:
             row = self.spark.sql("select l, d from test").head()
             self.assertEqual(1, row.asDict()["l"][0].a)
             self.assertEqual(1.0, row.asDict()["d"]["key"].c)
+
+    def test_convert_list_to_str(self):
+        data = [[[123], 120]]
+        schema = StructType(
+            [
+                StructField("name", StringType(), True),
+                StructField("income", LongType(), True),
+            ]
+        )
+        df = self.spark.createDataFrame(data, schema)
+        self.assertEqual(df.schema, schema)
+        self.assertEqual(df.count(), 1)
+        self.assertEqual(df.head(), Row(name="[123]", income=120))
 
     def test_udt(self):
         from pyspark.sql.types import _parse_datatype_json_string, _infer_type, _make_type_verifier
@@ -821,6 +862,15 @@ class TypesTestsMixin:
             if k != "varchar" and k != "char":
                 self.assertEqual(t(), _parse_datatype_string(k))
         self.assertEqual(IntegerType(), _parse_datatype_string("int"))
+        self.assertEqual(StringType(), _parse_datatype_string("string COLLATE 'UCS_BASIC'"))
+        self.assertEqual(StringType(0), _parse_datatype_string("string"))
+        self.assertEqual(StringType(0), _parse_datatype_string("string COLLATE 'UCS_BASIC'"))
+        self.assertEqual(StringType(0), _parse_datatype_string("string   COLLATE 'UCS_BASIC'"))
+        self.assertEqual(StringType(0), _parse_datatype_string("string COLLATE'UCS_BASIC'"))
+        self.assertEqual(StringType(1), _parse_datatype_string("string COLLATE 'UCS_BASIC_LCASE'"))
+        self.assertEqual(StringType(1), _parse_datatype_string("string COLLATE 'UCS_BASIC_LCASE'"))
+        self.assertEqual(StringType(2), _parse_datatype_string("string COLLATE 'UNICODE'"))
+        self.assertEqual(StringType(3), _parse_datatype_string("string COLLATE 'UNICODE_CI'"))
         self.assertEqual(CharType(1), _parse_datatype_string("char(1)"))
         self.assertEqual(CharType(10), _parse_datatype_string("char( 10   )"))
         self.assertEqual(CharType(11), _parse_datatype_string("char( 11)"))
@@ -846,6 +896,7 @@ class TypesTestsMixin:
             StructType([StructField("a", IntegerType()), StructField("c", DoubleType())]),
             _parse_datatype_string("a INT, c DOUBLE"),
         )
+        self.assertEqual(VariantType(), _parse_datatype_string("variant"))
 
     def test_metadata_null(self):
         schema = StructType(
@@ -864,6 +915,18 @@ class TypesTestsMixin:
         self.assertEqual("b", df.select(df.r.getField("b")).first()[0])
         self.assertEqual("v", df.select(df.d["k"]).first()[0])
         self.assertEqual("v", df.select(df.d.getItem("k")).first()[0])
+
+        # Deprecated behaviors
+        map_col = F.create_map(F.lit(0), F.lit(100), F.lit(1), F.lit(200))
+        self.assertEqual(
+            self.spark.range(1).withColumn("mapped", map_col.getItem(F.col("id"))).first()[1], 100
+        )
+
+        struct_col = F.struct(F.lit(0), F.lit(100), F.lit(1), F.lit(200))
+        self.assertEqual(
+            self.spark.range(1).withColumn("struct", struct_col.getField(F.lit("col1"))).first()[1],
+            0,
+        )
 
     def test_infer_long_type(self):
         longrow = [Row(f1="a", f2=100000000000000)]
@@ -1152,6 +1215,10 @@ class TypesTestsMixin:
         instances = [
             NullType(),
             StringType(),
+            StringType(0),
+            StringType(1),
+            StringType(2),
+            StringType(3),
             CharType(10),
             VarcharType(10),
             BinaryType(),
@@ -1170,6 +1237,7 @@ class TypesTestsMixin:
             MapType(StringType(), IntegerType()),
             StructField("f1", StringType(), True),
             StructType([StructField("f1", StringType(), True)]),
+            VariantType(),
         ]
         for instance in instances:
             self.assertEqual(eval(repr(instance)), instance)
@@ -1187,14 +1255,32 @@ class TypesTestsMixin:
             "interval hour to second",
         )
 
-        with self.assertRaisesRegex(RuntimeError, "interval None to 3 is invalid"):
+        with self.assertRaises(PySparkRuntimeError) as pe:
             DayTimeIntervalType(endField=DayTimeIntervalType.SECOND)
 
-        with self.assertRaisesRegex(RuntimeError, "interval 123 to 123 is invalid"):
+        self.check_error(
+            exception=pe.exception,
+            error_class="INVALID_INTERVAL_CASTING",
+            message_parameters={"start_field": "None", "end_field": "3"},
+        )
+
+        with self.assertRaises(PySparkRuntimeError) as pe:
             DayTimeIntervalType(123)
 
-        with self.assertRaisesRegex(RuntimeError, "interval 0 to 321 is invalid"):
+        self.check_error(
+            exception=pe.exception,
+            error_class="INVALID_INTERVAL_CASTING",
+            message_parameters={"start_field": "123", "end_field": "123"},
+        )
+
+        with self.assertRaises(PySparkRuntimeError) as pe:
             DayTimeIntervalType(DayTimeIntervalType.DAY, 321)
+
+        self.check_error(
+            exception=pe.exception,
+            error_class="INVALID_INTERVAL_CASTING",
+            message_parameters={"start_field": "0", "end_field": "321"},
+        )
 
     def test_daytime_interval_type(self):
         # SPARK-37277: Support DayTimeIntervalType in createDataFrame
@@ -1256,14 +1342,32 @@ class TypesTestsMixin:
             "interval year to month",
         )
 
-        with self.assertRaisesRegex(RuntimeError, "interval None to 3 is invalid"):
+        with self.assertRaises(PySparkRuntimeError) as pe:
             YearMonthIntervalType(endField=3)
 
-        with self.assertRaisesRegex(RuntimeError, "interval 123 to 123 is invalid"):
+        self.check_error(
+            exception=pe.exception,
+            error_class="INVALID_INTERVAL_CASTING",
+            message_parameters={"start_field": "None", "end_field": "3"},
+        )
+
+        with self.assertRaises(PySparkRuntimeError) as pe:
             YearMonthIntervalType(123)
 
-        with self.assertRaisesRegex(RuntimeError, "interval 0 to 321 is invalid"):
+        self.check_error(
+            exception=pe.exception,
+            error_class="INVALID_INTERVAL_CASTING",
+            message_parameters={"start_field": "123", "end_field": "123"},
+        )
+
+        with self.assertRaises(PySparkRuntimeError) as pe:
             YearMonthIntervalType(YearMonthIntervalType.YEAR, 321)
+
+        self.check_error(
+            exception=pe.exception,
+            error_class="INVALID_INTERVAL_CASTING",
+            message_parameters={"start_field": "0", "end_field": "321"},
+        )
 
     def test_yearmonth_interval_type(self):
         schema1 = self.spark.sql("SELECT INTERVAL '10-8' YEAR TO MONTH AS interval").schema
@@ -1299,6 +1403,22 @@ class TypesTestsMixin:
             DataType.fromDDL("a int, b string"),
             StructType([StructField("a", IntegerType()), StructField("b", StringType())]),
         )
+        self.assertEqual(
+            DataType.fromDDL("a int, v variant"),
+            StructType([StructField("a", IntegerType()), StructField("v", VariantType())]),
+        )
+
+    def test_collated_string(self):
+        dfs = [
+            self.spark.sql("SELECT 'abc' collate 'UCS_BASIC_LCASE'"),
+            self.spark.createDataFrame([], StructType([StructField("id", StringType(1))])),
+        ]
+        for df in dfs:
+            # performs both datatype -> proto & proto -> datatype conversions
+            self.assertEqual(
+                df.to(StructType([StructField("new", StringType(1))])).schema[0].dataType,
+                StringType(1),
+            )
 
 
 class DataTypeTests(unittest.TestCase):
@@ -1382,9 +1502,9 @@ class DataTypeVerificationTests(unittest.TestCase, PySparkErrorTestUtils):
 
         self.check_error(
             exception=pe.exception,
-            error_class="CANNOT_BE_NONE",
+            error_class="FIELD_NOT_NULLABLE_WITH_NAME",
             message_parameters={
-                "arg_name": "obj",
+                "field_name": "test_name",
             },
         )
 
@@ -1394,11 +1514,12 @@ class DataTypeVerificationTests(unittest.TestCase, PySparkErrorTestUtils):
 
         self.check_error(
             exception=pe.exception,
-            error_class="CANNOT_ACCEPT_OBJECT_IN_TYPE",
+            error_class="FIELD_DATA_TYPE_UNACCEPTABLE_WITH_NAME",
             message_parameters={
                 "data_type": "IntegerType()",
-                "obj_name": "data",
-                "obj_type": "str",
+                "field_name": "field b in field a",
+                "obj": "'data'",
+                "obj_type": "<class 'str'>",
             },
         )
 
@@ -1436,6 +1557,7 @@ class DataTypeVerificationTests(unittest.TestCase, PySparkErrorTestUtils):
             (1.0, StringType()),
             ([], StringType()),
             ({}, StringType()),
+            ("", StringType(1)),
             # Char
             ("", CharType(10)),
             (1, CharType(10)),
@@ -1504,6 +1626,7 @@ class DataTypeVerificationTests(unittest.TestCase, PySparkErrorTestUtils):
         failure_spec = [
             # String (match anything but None)
             (None, StringType(), ValueError),
+            (None, StringType(1), ValueError),
             # CharType (match anything but None)
             (None, CharType(10), ValueError),
             # VarcharType (match anything but None)
@@ -1578,6 +1701,13 @@ class DataTypeVerificationTests(unittest.TestCase, PySparkErrorTestUtils):
 
         self.assertEqual(r, expected)
         self.assertEqual(repr(r), "Row(b=1, a=2)")
+
+    def test_struct_field_from_json(self):
+        # SPARK-40820: fromJson with only name and type
+        json = {"name": "c1", "type": "string"}
+        struct_field = StructField.fromJson(json)
+
+        self.assertEqual(repr(struct_field), "StructField('c1', StringType(), True)")
 
 
 class TypesTests(TypesTestsMixin, ReusedSQLTestCase):

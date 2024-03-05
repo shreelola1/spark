@@ -58,26 +58,14 @@ import org.apache.spark.tags.DockerTest
  *  $ ./buildContainerImage.sh -v 23.2.0 -f
  *  $ export ORACLE_DOCKER_IMAGE_NAME=oracle/database:23.2.0-free
  *
- * This procedure has been validated with Oracle Databae Free version 23.2.0,
+ * This procedure has been validated with Oracle Database Free version 23.2.0,
  * and with Oracle Express Edition versions 18.4.0 and 21.3.0
  */
 @DockerTest
 class OracleIntegrationSuite extends DockerJDBCIntegrationSuite with SharedSparkSession {
   import testImplicits._
 
-  override val db = new DatabaseOnDocker {
-    lazy override val imageName =
-      sys.env.getOrElse("ORACLE_DOCKER_IMAGE_NAME", "gvenzl/oracle-free:23.3")
-    val oracle_password = "Th1s1sThe0racle#Pass"
-    override val env = Map(
-      "ORACLE_PWD" -> oracle_password,      // oracle images uses this
-      "ORACLE_PASSWORD" -> oracle_password  // gvenzl/oracle-free uses this
-    )
-    override val usesIpc = false
-    override val jdbcPort: Int = 1521
-    override def getJdbcUrl(ip: String, port: Int): String =
-      s"jdbc:oracle:thin:system/$oracle_password@//$ip:$port/freepdb1"
-  }
+  override val db = new OracleDatabaseOnDocker
 
   override val connectionTimeout = timeout(7.minutes)
 
@@ -157,12 +145,19 @@ class OracleIntegrationSuite extends DockerJDBCIntegrationSuite with SharedSpark
         |(4, {d '2018-07-12'}, {ts '2018-07-12 09:51:15'})
       """.stripMargin.replaceAll("\n", " ")).executeUpdate()
     conn.commit()
+
+    conn.prepareStatement("CREATE TABLE test_ltz(t TIMESTAMP WITH LOCAL TIME ZONE)")
+      .executeUpdate()
+    conn.prepareStatement(
+      "INSERT INTO test_ltz (t) VALUES (TIMESTAMP '2018-11-17 13:33:33')")
+      .executeUpdate()
+    conn.commit()
   }
 
   test("SPARK-16625 : Importing Oracle numeric types") {
     val df = sqlContext.read.jdbc(jdbcUrl, "numerics", new Properties)
     val rows = df.collect()
-    assert(rows.size == 1)
+    assert(rows.length == 1)
     val row = rows(0)
     // The main point of the below assertions is not to make sure that these Oracle types are
     // mapped to decimal types, but to make sure that the returned values are correct.
@@ -175,8 +170,7 @@ class OracleIntegrationSuite extends DockerJDBCIntegrationSuite with SharedSpark
   }
 
 
-  // SPARK-43049: Use CLOB instead of VARCHAR(255) for StringType for Oracle jdbc-am""
-  test("SPARK-12941: String datatypes to be mapped to CLOB in Oracle") {
+  test("SPARK-12941: String datatypes to be mapped to VARCHAR(255) in Oracle") {
     // create a sample dataframe with string type
     val df1 = sparkContext.parallelize(Seq(("foo"))).toDF("x")
     // write the dataframe to the oracle table tbl
@@ -372,10 +366,9 @@ class OracleIntegrationSuite extends DockerJDBCIntegrationSuite with SharedSpark
 
   test("SPARK-20427/SPARK-20921: read table use custom schema by jdbc api") {
     // default will throw IllegalArgumentException
-    val e = intercept[org.apache.spark.SparkException] {
+    val e = intercept[org.apache.spark.SparkArithmeticException] {
       spark.read.jdbc(jdbcUrl, "tableWithCustomSchema", new Properties()).collect()
     }
-    assert(e.getCause().isInstanceOf[ArithmeticException])
     assert(e.getMessage.contains("Decimal precision 39 exceeds max precision 38"))
 
     // custom schema can read data
@@ -413,7 +406,7 @@ class OracleIntegrationSuite extends DockerJDBCIntegrationSuite with SharedSpark
     // read records from oracle_types
     val dfRead = sqlContext.read.jdbc(jdbcUrl, tableName, new Properties)
     val rows = dfRead.collect()
-    assert(rows.size == 1)
+    assert(rows.length == 1)
 
     // check data types
     val types = dfRead.schema.map(field => field.dataType)
@@ -537,5 +530,25 @@ class OracleIntegrationSuite extends DockerJDBCIntegrationSuite with SharedSpark
       .collect()
     assert(rows(0).getString(0).nonEmpty)
     assert(rows(1).getString(0) == null)
+  }
+
+  test("SPARK-42627: Support ORACLE TIMESTAMP WITH LOCAL TIME ZONE") {
+    val reader = spark.read.format("jdbc")
+      .option("url", jdbcUrl)
+      .option("dbtable", "test_ltz")
+    val df = reader.load()
+    val row1 = df.collect().head.getTimestamp(0)
+    assert(df.count() === 1)
+    assert(row1 === Timestamp.valueOf("2018-11-17 13:33:33"))
+
+    df.write.format("jdbc")
+      .option("url", jdbcUrl)
+      .option("dbtable", "test_ltz")
+      .mode("append")
+      .save()
+
+    val df2 = reader.load()
+    assert(df.count() === 2)
+    assert(df2.collect().forall(_.getTimestamp(0) === row1))
   }
 }

@@ -16,6 +16,7 @@
 # limitations under the License.
 #
 
+import copy
 import functools
 import itertools
 import os
@@ -123,7 +124,7 @@ def try_simplify_traceback(tb: TracebackType) -> Optional[TracebackType]:
     >>> import sys
     >>> import traceback
     >>> import tempfile
-    >>> with tempfile.TemporaryDirectory() as tmp_dir:
+    >>> with tempfile.TemporaryDirectory(prefix="try_simplify_traceback") as tmp_dir:
     ...     with open("%s/dummy_module.py" % tmp_dir, "w") as f:
     ...         _ = f.write(
     ...             'def raise_stop_iteration():\\n'
@@ -343,14 +344,19 @@ def inheritable_thread_target(f: Optional[Union[Callable, "SparkSession"]] = Non
         assert session is not None, "Spark Connect session must be provided."
 
         def outer(ff: Callable) -> Callable:
-            if not hasattr(session.client.thread_local, "tags"):  # type: ignore[union-attr]
-                session.client.thread_local.tags = set()  # type: ignore[union-attr]
-            tags = set(session.client.thread_local.tags)  # type: ignore[union-attr]
+            session_client_thread_local_attrs = [
+                (attr, copy.deepcopy(value))
+                for (
+                    attr,
+                    value,
+                ) in session.client.thread_local.__dict__.items()  # type: ignore[union-attr]
+            ]
 
             @functools.wraps(ff)
             def inner(*args: Any, **kwargs: Any) -> Any:
-                # Set tags in child thread.
-                session.client.thread_local.tags = tags  # type: ignore[union-attr]
+                # Set thread locals in child thread.
+                for attr, value in session_client_thread_local_attrs:
+                    setattr(session.client.thread_local, attr, value)  # type: ignore[union-attr]
                 return ff(*args, **kwargs)
 
             return inner

@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.analysis.{TypeCheckResult, TypeCoercion, Un
 import org.apache.spark.sql.catalyst.analysis.TypeCheckResult.DataTypeMismatch
 import org.apache.spark.sql.catalyst.expressions.Cast._
 import org.apache.spark.sql.catalyst.expressions.codegen._
-import org.apache.spark.sql.catalyst.trees.{BinaryLike, QuaternaryLike, TernaryLike}
+import org.apache.spark.sql.catalyst.trees.{BinaryLike, CurrentOrigin, QuaternaryLike, TernaryLike}
 import org.apache.spark.sql.catalyst.trees.TreePattern._
 import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.catalyst.util._
@@ -200,9 +200,11 @@ trait HigherOrderFunction extends Expression with ExpectsInputTypes {
    */
   final def bind(
       f: (Expression, Seq[(DataType, Boolean)]) => LambdaFunction): HigherOrderFunction = {
-    val res = bindInternal(f)
-    res.copyTagsFrom(this)
-    res
+    CurrentOrigin.withOrigin(origin) {
+      val res = bindInternal(f)
+      res.copyTagsFrom(this)
+      res
+    }
   }
 
   protected def bindInternal(
@@ -268,7 +270,7 @@ trait SimpleHigherOrderFunction extends HigherOrderFunction with BinaryLike[Expr
    * in order to save null-check code.
    */
   protected def nullSafeEval(inputRow: InternalRow, argumentValue: Any): Any =
-    throw QueryExecutionErrors.notOverrideExpectedMethodsError("UnaryHigherOrderFunction",
+    throw QueryExecutionErrors.notOverrideExpectedMethodsError(this.getClass.getName,
       "eval", "nullSafeEval")
 
   override def eval(inputRow: InternalRow): Any = {
@@ -425,7 +427,7 @@ case class ArraySort(
             DataTypeMismatch(
               errorSubClass = "UNEXPECTED_INPUT_TYPE",
               messageParameters = Map(
-                "paramIndex" -> "1",
+                "paramIndex" -> ordinalNumber(0),
                 "requiredType" -> toSQLType(ArrayType),
                 "inputSql" -> toSQLExpr(argument),
                 "inputType" -> toSQLType(argument.dataType)
@@ -838,7 +840,7 @@ case class ArrayAggregate(
           DataTypeMismatch(
             errorSubClass = "UNEXPECTED_INPUT_TYPE",
             messageParameters = Map(
-              "paramIndex" -> "3",
+              "paramIndex" -> ordinalNumber(2),
               "requiredType" -> toSQLType(zero.dataType),
               "inputSql" -> toSQLExpr(merge),
               "inputType" -> toSQLType(merge.dataType)))

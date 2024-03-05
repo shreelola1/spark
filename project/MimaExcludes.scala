@@ -42,10 +42,47 @@ object MimaExcludes {
     ProblemFilters.exclude[IncompatibleMethTypeProblem]("org.apache.spark.api.python.BasePythonRunner#ReaderIterator.this"),
     // [SPARK-44198][CORE] Support propagation of the log level to the executors
     ProblemFilters.exclude[MissingTypesProblem]("org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages$SparkAppConfig$"),
+    //[SPARK-46399][Core] Add exit status to the Application End event for the use of Spark Listener
+    ProblemFilters.exclude[DirectMissingMethodProblem]("org.apache.spark.scheduler.SparkListenerApplicationEnd.*"),
+    ProblemFilters.exclude[MissingTypesProblem]("org.apache.spark.scheduler.SparkListenerApplicationEnd$"),
     // [SPARK-45427][CORE] Add RPC SSL settings to SSLOptions and SparkTransportConf
     ProblemFilters.exclude[DirectMissingMethodProblem]("org.apache.spark.network.netty.SparkTransportConf.fromSparkConf"),
     // [SPARK-45136][CONNECT] Enhance ClosureCleaner with Ammonite support
-    ProblemFilters.exclude[MissingClassProblem]("org.apache.spark.util.MethodIdentifier$")
+    ProblemFilters.exclude[MissingClassProblem]("org.apache.spark.util.MethodIdentifier$"),
+    // [SPARK-45022][SQL] Provide context for dataset API errors
+    ProblemFilters.exclude[ReversedMissingMethodProblem]("org.apache.spark.QueryContext.contextType"),
+    ProblemFilters.exclude[ReversedMissingMethodProblem]("org.apache.spark.QueryContext.code"),
+    ProblemFilters.exclude[ReversedMissingMethodProblem]("org.apache.spark.QueryContext.callSite"),
+    ProblemFilters.exclude[ReversedMissingMethodProblem]("org.apache.spark.QueryContext.summary"),
+    ProblemFilters.exclude[IncompatibleResultTypeProblem]("org.apache.spark.sql.types.Decimal.fromStringANSI$default$3"),
+    ProblemFilters.exclude[IncompatibleMethTypeProblem]("org.apache.spark.sql.types.Decimal.fromStringANSI"),
+    // [SPARK-45762][CORE] Support shuffle managers defined in user jars by changing startup order
+    ProblemFilters.exclude[DirectMissingMethodProblem]("org.apache.spark.SparkEnv.this"),
+    // [SPARK-46480][CORE][SQL] Fix NPE when table cache task attempt
+    ProblemFilters.exclude[ReversedMissingMethodProblem]("org.apache.spark.TaskContext.isFailed"),
+
+    // SPARK-43299: Convert StreamingQueryException in Scala Client
+    ProblemFilters.exclude[MissingClassProblem]("org.apache.spark.sql.streaming.StreamingQueryException"),
+
+    // SPARK-45856: Move ArtifactManager from Spark Connect into SparkSession (sql/core)
+    ProblemFilters.exclude[DirectMissingMethodProblem]("org.apache.spark.storage.CacheId.apply"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("org.apache.spark.storage.CacheId.userId"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("org.apache.spark.storage.CacheId.sessionId"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("org.apache.spark.storage.CacheId.copy"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("org.apache.spark.storage.CacheId.copy$default$3"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("org.apache.spark.storage.CacheId.this"),
+    ProblemFilters.exclude[MissingTypesProblem]("org.apache.spark.storage.CacheId$"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("org.apache.spark.storage.CacheId.apply"),
+
+    // SPARK-46410: Assign error classes/subclasses to JdbcUtils.classifyException
+    ProblemFilters.exclude[DirectMissingMethodProblem]("org.apache.spark.sql.jdbc.JdbcDialect.classifyException"),
+    // TODO(SPARK-46878): Invalid Mima report for StringType extension
+    ProblemFilters.exclude[DirectMissingMethodProblem]("org.apache.spark.sql.types.StringType.this"),
+    // SPARK-47011: Remove deprecated BinaryClassificationMetrics.scoreLabelsWeight
+    ProblemFilters.exclude[DirectMissingMethodProblem]("org.apache.spark.mllib.evaluation.BinaryClassificationMetrics.scoreLabelsWeight"),
+    // SPARK-46938: Javax -> Jakarta namespace change.
+    ProblemFilters.exclude[MissingTypesProblem]("org.apache.spark.ui.ProxyRedirectHandler$ResponseWrapper"),
+    ProblemFilters.exclude[IncompatibleMethTypeProblem]("org.apache.spark.ui.ProxyRedirectHandler#ResponseWrapper.this")
   )
 
   // Default exclude rules
@@ -77,9 +114,6 @@ object MimaExcludes {
     // SPARK-44104: shaded protobuf code and Apis with parameters relocated
     ProblemFilters.exclude[Problem]("org.sparkproject.spark_protobuf.protobuf.*"),
     ProblemFilters.exclude[Problem]("org.apache.spark.sql.protobuf.utils.SchemaConverters.*"),
-
-    // SPARK-43299: Convert StreamingQueryException in Scala Client
-    ProblemFilters.exclude[MissingClassProblem]("org.apache.spark.sql.streaming.StreamingQueryException"),
 
     (problem: Problem) => problem match {
       case MissingClassProblem(cls) => !cls.fullName.startsWith("org.sparkproject.jpmml") &&

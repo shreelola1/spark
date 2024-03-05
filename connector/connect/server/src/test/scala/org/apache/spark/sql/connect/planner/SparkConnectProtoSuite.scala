@@ -307,6 +307,18 @@ class SparkConnectProtoSuite extends PlanTest with SparkConnectPlanTest {
     comparePlans(connectPlan2, sparkPlan2)
   }
 
+  test("GroupingSets expressions") {
+    val connectPlan1 =
+      connectTestRelation.groupingSets(Seq(Seq("id".protoAttr), Seq.empty), "id".protoAttr)(
+        proto_min(proto.Expression.newBuilder().setLiteral(toLiteralProto(1)).build())
+          .as("agg1"))
+    val sparkPlan1 =
+      sparkTestRelation
+        .groupingSets(Seq(Seq(Column("id")), Seq.empty), Column("id"))
+        .agg(min(lit(1)).as("agg1"))
+    comparePlans(connectPlan1, sparkPlan1)
+  }
+
   test("Test as(alias: String)") {
     val connectPlan = connectTestRelation.as("target_table")
     val sparkPlan = sparkTestRelation.as("target_table")
@@ -1030,6 +1042,14 @@ class SparkConnectProtoSuite extends PlanTest with SparkConnectPlanTest {
     splitRelations1.zip(splits1).foreach { case (connectPlan, sparkPlan) =>
       comparePlans(connectPlan, sparkPlan)
     }
+  }
+
+  test("SPARK-47144: Collated string") {
+    Seq("UCS_BASIC", "UCS_BASIC_LCASE", "UNICODE", "UNICODE_CI").map(collationName =>
+      Seq(
+        s"select 'abc' collate '$collationName'",
+        s"select collation('abc' collate '$collationName')").map(query =>
+        comparePlans(connect.sql(query), spark.sql(query))))
   }
 
   private def createLocalRelationProtoByAttributeReferences(

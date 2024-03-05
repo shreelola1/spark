@@ -41,6 +41,7 @@ import org.apache.spark.sql.sources._
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
+import org.apache.spark.util.ArrayImplicits._
 
 /**
  * The provider class for all Kafka readers and writers. It is designed such that it throws
@@ -171,9 +172,12 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
       data: DataFrame): BaseRelation = {
     mode match {
       case SaveMode.Overwrite | SaveMode.Ignore =>
-        throw new AnalysisException(s"Save mode $mode not allowed for Kafka. " +
-          s"Allowed save modes are ${SaveMode.Append} and " +
-          s"${SaveMode.ErrorIfExists} (default).")
+        throw new AnalysisException(
+          errorClass = "_LEGACY_ERROR_TEMP_3081",
+          messageParameters = Map(
+            "mode" -> mode.toString,
+            "append" -> SaveMode.Append.toString,
+            "errorIfExists" -> SaveMode.ErrorIfExists.toString))
       case _ => // good
     }
     val caseInsensitiveParameters = CaseInsensitiveMap(parameters)
@@ -204,7 +208,7 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
       case (ASSIGN, value) =>
         AssignStrategy(JsonUtils.partitions(value))
       case (SUBSCRIBE, value) =>
-        SubscribeStrategy(value.split(",").map(_.trim()).filter(_.nonEmpty))
+        SubscribeStrategy(value.split(",").map(_.trim()).filter(_.nonEmpty).toImmutableArraySeq)
       case (SUBSCRIBE_PATTERN, value) =>
         SubscribePatternStrategy(value.trim())
       case _ =>
@@ -579,14 +583,6 @@ private[kafka010] object KafkaSourceProvider extends Logging {
       | data was aged out by Kafka or the topic may have been deleted before all the data in the
       | topic was processed. If you want your streaming query to fail on such cases, set the source
       | option "failOnDataLoss" to "true".
-    """.stripMargin
-
-  val INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_TRUE =
-    """
-      |Some data may have been lost because they are not available in Kafka any more; either the
-      | data was aged out by Kafka or the topic may have been deleted before all the data in the
-      | topic was processed. If you don't want your streaming query to fail on such cases, set the
-      | source option "failOnDataLoss" to "false".
     """.stripMargin
 
   val CUSTOM_GROUP_ID_ERROR_MESSAGE =

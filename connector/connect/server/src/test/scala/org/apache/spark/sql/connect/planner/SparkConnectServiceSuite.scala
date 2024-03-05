@@ -115,7 +115,7 @@ class SparkConnectServiceSuite
         .build()
       val response2 = handler.process(request2, sparkSessionHolder)
       assert(response2.hasExplain)
-      assert(response2.getExplain.getExplainString.size > 0)
+      assert(response2.getExplain.getExplainString.length > 0)
 
       val request3 = proto.AnalyzePlanRequest
         .newBuilder()
@@ -650,7 +650,7 @@ class SparkConnectServiceSuite
       // the SparkConnectService. If we throw an exception inside it, it will be caught by
       // the ErrorUtils.handleError wrapping instance.executePlan and turned into an onError
       // call with StatusRuntimeException, which will be eaten here.
-      var failures: mutable.ArrayBuffer[String] = new mutable.ArrayBuffer[String]()
+      val failures: mutable.ArrayBuffer[String] = new mutable.ArrayBuffer[String]()
       instance.executePlan(
         request,
         new StreamObserver[proto.ExecutePlanResponse] {
@@ -841,12 +841,12 @@ class SparkConnectServiceSuite
     spark.sparkContext.addSparkListener(verifyEvents.listener)
     Utils.tryWithSafeFinally({
       f(verifyEvents)
-      SparkConnectService.invalidateAllSessions()
+      SparkConnectService.sessionManager.invalidateAllSessions()
       verifyEvents.onSessionClosed()
     }) {
       verifyEvents.waitUntilEmpty()
       spark.sparkContext.removeSparkListener(verifyEvents.listener)
-      SparkConnectService.invalidateAllSessions()
+      SparkConnectService.sessionManager.invalidateAllSessions()
       SparkConnectPluginRegistry.reset()
     }
   }

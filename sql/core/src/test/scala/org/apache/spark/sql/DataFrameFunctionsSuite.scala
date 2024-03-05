@@ -167,20 +167,22 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"map_from_arrays(k, v)\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "requiredType" -> "\"ARRAY\"",
         "inputSql" -> "\"k\"",
         "inputType" -> "\"INT\""
-      )
+      ),
+      queryContext = Array(
+        ExpectedContext(
+          fragment = "map_from_arrays",
+          callSitePattern = getCurrentClassCallSitePattern))
     )
 
     val df5 = Seq((Seq("a", null), Seq(1, 2))).toDF("k", "v")
-    val e1 = intercept[SparkException] {
-      df5.select(map_from_arrays($"k", $"v")).collect()
-    }
-    assert(e1.getCause.isInstanceOf[SparkRuntimeException])
     checkError(
-      exception = e1.getCause.asInstanceOf[SparkRuntimeException],
+      exception = intercept[SparkRuntimeException] {
+        df5.select(map_from_arrays($"k", $"v")).collect()
+      },
       errorClass = "NULL_MAP_KEY",
       parameters = Map.empty
     )
@@ -758,18 +760,24 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
 
   test("The given function only supports array input") {
     val df = Seq(1, 2, 3).toDF("a")
-    checkErrorMatchPVals(
+    checkError(
       exception = intercept[AnalysisException] {
         df.select(array_sort(col("a"), (x, y) => x - y))
       },
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> """"array_sort\(a, lambdafunction\(`-`\(x_\d+, y_\d+\), x_\d+, y_\d+\)\)"""",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "requiredType" -> "\"ARRAY\"",
         "inputSql" -> "\"a\"",
         "inputType" -> "\"INT\""
-      ))
+      ),
+      matchPVals = true,
+      queryContext = Array(
+        ExpectedContext(
+          fragment = "array_sort",
+          callSitePattern = getCurrentClassCallSitePattern))
+    )
   }
 
   test("sort_array/array_sort functions") {
@@ -826,7 +834,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"sort_array(a, true)\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "requiredType" -> "\"ARRAY\"",
         "inputSql" -> "\"a\"",
         "inputType" -> "\"STRING\""
@@ -863,7 +871,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       sqlState = None,
       parameters = Map(
         "sqlExpr" -> "\"array_sort(a, lambdafunction((IF(((left IS NULL) AND (right IS NULL)), 0, (IF((left IS NULL), 1, (IF((right IS NULL), -1, (IF((left < right), -1, (IF((left > right), 1, 0)))))))))), left, right))\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"a\"",
         "inputType" -> "\"STRING\"",
         "requiredType" -> "\"ARRAY\""),
@@ -1232,8 +1240,8 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       Row(null)
     )
 
-    intercept[SparkException](df1.selectExpr("map_concat(map1, map2)").collect())
-    intercept[SparkException](df1.select(map_concat($"map1", $"map2")).collect())
+    intercept[SparkRuntimeException](df1.selectExpr("map_concat(map1, map2)").collect())
+    intercept[SparkRuntimeException](df1.select(map_concat($"map1", $"map2")).collect())
     withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> SQLConf.MapKeyDedupPolicy.LAST_WIN.toString) {
       checkAnswer(df1.selectExpr("map_concat(map1, map2)"), expected1a)
       checkAnswer(df1.select(map_concat($"map1", $"map2")), expected1a)
@@ -1305,7 +1313,11 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       parameters = Map(
         "sqlExpr" -> "\"map_concat(map1, map2)\"",
         "dataType" -> "(\"MAP<ARRAY<INT>, INT>\" or \"MAP<STRING, INT>\")",
-        "functionName" -> "`map_concat`")
+        "functionName" -> "`map_concat`"),
+      context =
+        ExpectedContext(
+          fragment = "map_concat",
+          callSitePattern = getCurrentClassCallSitePattern)
     )
 
     checkError(
@@ -1333,7 +1345,11 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       parameters = Map(
         "sqlExpr" -> "\"map_concat(map1, 12)\"",
         "dataType" -> "[\"MAP<ARRAY<INT>, INT>\", \"INT\"]",
-        "functionName" -> "`map_concat`")
+        "functionName" -> "`map_concat`"),
+      context =
+        ExpectedContext(
+          fragment = "map_concat",
+          callSitePattern = getCurrentClassCallSitePattern)
     )
   }
 
@@ -1398,11 +1414,15 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"map_from_entries(a)\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"a\"",
         "inputType" -> "\"INT\"",
         "requiredType" -> "\"ARRAY\" of pair \"STRUCT\""
-      )
+      ),
+      context =
+        ExpectedContext(
+          fragment = "map_from_entries",
+          callSitePattern = getCurrentClassCallSitePattern)
     )
   }
 
@@ -1439,7 +1459,11 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       parameters = Map(
         "sqlExpr" -> "\"array_contains(a, NULL)\"",
         "functionName" -> "`array_contains`"
-      )
+      ),
+      context =
+        ExpectedContext(
+          fragment = "array_contains",
+          callSitePattern = getCurrentClassCallSitePattern)
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -1503,23 +1527,10 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       Seq(Row(false))
     )
 
-    if (!conf.ansiEnabled) {
-      checkError(
-        exception = intercept[AnalysisException] {
-          OneRowRelation().selectExpr("array_contains(array(1), .01234567890123456790123456780)")
-        },
-        errorClass = "DATATYPE_MISMATCH.ARRAY_FUNCTION_DIFF_TYPES",
-        parameters = Map(
-          "sqlExpr" -> "\"array_contains(array(1), 0.01234567890123456790123456780)\"",
-          "functionName" -> "`array_contains`",
-          "dataType" -> "\"ARRAY\"",
-          "leftType" -> "\"ARRAY<INT>\"",
-          "rightType" -> "\"DECIMAL(38,29)\""
-        ),
-        queryContext = Array(ExpectedContext("", "", 0, 55,
-          "array_contains(array(1), .01234567890123456790123456780)"))
-      )
-    }
+    checkAnswer(
+      OneRowRelation().selectExpr("array_contains(array(1), .01234567890123456790123456780)"),
+      Seq(Row(false))
+    )
 
     checkError(
       exception = intercept[AnalysisException] {
@@ -1544,7 +1555,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"array_contains(a string, foo)\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "requiredType" -> "\"ARRAY\"",
         "inputSql" -> "\"a string\"",
         "inputType" -> "\"STRING\""
@@ -1699,7 +1710,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"array_join(x, 1)\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"1\"",
         "inputType" -> "\"INT\"",
         "requiredType" -> "\"STRING\""
@@ -1713,7 +1724,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"array_join(x, , , 1)\"",
-        "paramIndex" -> "3",
+        "paramIndex" -> "third",
         "inputSql" -> "\"1\"",
         "inputType" -> "\"INT\"",
         "requiredType" -> "\"STRING\""
@@ -1973,9 +1984,9 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"reverse(struct(1, a))\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"struct(1, a)\"",
-        "inputType" -> "\"STRUCT<col1: INT, col2: STRING>\"",
+        "inputType" -> "\"STRUCT<col1: INT NOT NULL, col2: STRING NOT NULL>\"",
         "requiredType" -> "(\"STRING\" or \"ARRAY\")"
       ),
       queryContext = Array(ExpectedContext("", "", 7, 29, "reverse(struct(1, 'a'))"))
@@ -1988,7 +1999,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"reverse(map(1, a))\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"map(1, a)\"",
         "inputType" -> "\"MAP<INT, STRING>\"",
         "requiredType" -> "(\"STRING\" or \"ARRAY\")"
@@ -2098,7 +2109,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"array_position(_1, _2)\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "requiredType" -> "\"ARRAY\"",
         "inputSql" -> "\"_1\"",
         "inputType" -> "\"STRING\""
@@ -2186,7 +2197,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"element_at(_1, _2)\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"_1\"",
         "inputType" -> "\"STRING\"",
         "requiredType" -> "(\"ARRAY\" or \"MAP\")"
@@ -2216,7 +2227,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"element_at(array(a, b), 1)\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"1\"",
         "inputType" -> "\"BIGINT\"",
         "requiredType" -> "\"INT\""
@@ -2348,7 +2359,11 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         "functionName" -> "`array_union`",
         "arrayType" -> "\"ARRAY\"",
         "leftType" -> "\"VOID\"",
-        "rightType" -> "\"ARRAY<STRING>\""))
+        "rightType" -> "\"ARRAY<STRING>\""),
+      context =
+        ExpectedContext(
+          fragment = "array_union",
+          callSitePattern = getCurrentClassCallSitePattern))
 
     checkError(
       exception = intercept[AnalysisException] {
@@ -2379,7 +2394,9 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         "functionName" -> "`array_union`",
         "arrayType" -> "\"ARRAY\"",
         "leftType" -> "\"VOID\"",
-        "rightType" -> "\"VOID\"")
+        "rightType" -> "\"VOID\""),
+      context = ExpectedContext(
+        fragment = "array_union", callSitePattern = getCurrentClassCallSitePattern)
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -2410,7 +2427,9 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         "functionName" -> "`array_union`",
         "arrayType" -> "\"ARRAY\"",
         "leftType" -> "\"ARRAY<ARRAY<INT>>\"",
-        "rightType" -> "\"ARRAY<STRING>\"")
+        "rightType" -> "\"ARRAY<STRING>\""),
+      queryContext = Array(ExpectedContext(
+        fragment = "array_union", callSitePattern = getCurrentClassCallSitePattern))
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -2532,7 +2551,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"concat(map(1, 2), map(3, 4))\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "requiredType" -> "(\"STRING\" or \"BINARY\" or \"ARRAY\")",
         "inputSql" -> "\"map(1, 2)\"",
         "inputType" -> "\"MAP<INT, INT>\""
@@ -2643,11 +2662,13 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"flatten(arr)\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"arr\"",
         "inputType" -> "\"ARRAY<INT>\"",
         "requiredType" -> "\"ARRAY\" of \"ARRAY\""
-      )
+      ),
+      context = ExpectedContext(
+        fragment = "flatten", callSitePattern = getCurrentClassCallSitePattern)
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -2656,11 +2677,13 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"flatten(i)\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"",
         "requiredType" -> "\"ARRAY\" of \"ARRAY\""
-      )
+      ),
+      queryContext = Array(ExpectedContext(
+        fragment = "flatten", callSitePattern = getCurrentClassCallSitePattern))
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -2669,11 +2692,13 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"flatten(s)\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"s\"",
         "inputType" -> "\"STRING\"",
         "requiredType" -> "\"ARRAY\" of \"ARRAY\""
-      )
+      ),
+      queryContext = Array(ExpectedContext(
+        fragment = "flatten", callSitePattern = getCurrentClassCallSitePattern))
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -2682,7 +2707,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"flatten(NULL)\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"NULL\"",
         "inputType" -> "\"VOID\"",
         "requiredType" -> "\"ARRAY\" of \"ARRAY\""
@@ -2778,11 +2803,13 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"array_repeat(a, b)\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"b\"",
         "inputType" -> "\"STRING\"",
         "requiredType" -> "\"INT\""
-      )
+      ),
+      context = ExpectedContext(
+        fragment = "array_repeat", callSitePattern = getCurrentClassCallSitePattern)
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -2791,11 +2818,13 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"array_repeat(a, 1)\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"1\"",
         "inputType" -> "\"STRING\"",
         "requiredType" -> "\"INT\""
-      )
+      ),
+      queryContext = Array(ExpectedContext(
+        fragment = "array_repeat", callSitePattern = getCurrentClassCallSitePattern))
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -2804,7 +2833,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"array_repeat(a, 1.0)\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"1.0\"",
         "inputType" -> "\"DECIMAL(2,1)\"",
         "requiredType" -> "\"INT\""
@@ -2854,7 +2883,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       },
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
-        "paramIndex" -> "0",
+        "paramIndex" -> "first",
         "sqlExpr" -> "\"array_prepend(_1, _2)\"",
         "inputSql" -> "\"_1\"",
         "inputType" -> "\"STRING\"",
@@ -3123,7 +3152,9 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         "arrayType" -> "\"ARRAY\"",
         "leftType" -> "\"VOID\"",
         "rightType" -> "\"VOID\""
-      )
+      ),
+      context = ExpectedContext(
+        fragment = "array_except", callSitePattern = getCurrentClassCallSitePattern)
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -3151,7 +3182,9 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         "arrayType" -> "\"ARRAY\"",
         "leftType" -> "\"ARRAY<INT>\"",
         "rightType" -> "\"ARRAY<STRING>\""
-      )
+      ),
+      queryContext = Array(ExpectedContext(
+        fragment = "array_except", callSitePattern = getCurrentClassCallSitePattern))
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -3179,7 +3212,9 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         "arrayType" -> "\"ARRAY\"",
         "leftType" -> "\"ARRAY<STRING>\"",
         "rightType" -> "\"VOID\""
-      )
+      ),
+      queryContext = Array(ExpectedContext(
+        fragment = "array_except", callSitePattern = getCurrentClassCallSitePattern))
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -3207,7 +3242,9 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         "arrayType" -> "\"ARRAY\"",
         "leftType" -> "\"VOID\"",
         "rightType" -> "\"ARRAY<STRING>\""
-      )
+      ),
+      queryContext = Array(ExpectedContext(
+        fragment = "array_except", callSitePattern = getCurrentClassCallSitePattern))
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -3276,7 +3313,9 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         "arrayType" -> "\"ARRAY\"",
         "leftType" -> "\"VOID\"",
         "rightType" -> "\"VOID\""
-      )
+      ),
+      context = ExpectedContext(
+        fragment = "array_intersect", callSitePattern = getCurrentClassCallSitePattern)
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -3305,7 +3344,9 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         "arrayType" -> "\"ARRAY\"",
         "leftType" -> "\"ARRAY<INT>\"",
         "rightType" -> "\"ARRAY<STRING>\""
-      )
+      ),
+      queryContext = Array(ExpectedContext(
+        fragment = "array_intersect", callSitePattern = getCurrentClassCallSitePattern))
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -3334,7 +3375,11 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         "arrayType" -> "\"ARRAY\"",
         "leftType" -> "\"VOID\"",
         "rightType" -> "\"ARRAY<STRING>\""
-      )
+      ),
+      queryContext = Array(
+        ExpectedContext(
+          fragment = "array_intersect",
+          callSitePattern = getCurrentClassCallSitePattern))
     )
     checkError(
       exception = intercept[AnalysisException] {
@@ -3370,12 +3415,10 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
     )
     checkAnswer(df4.selectExpr("array_insert(a, b, c)"), Seq(Row(Seq(true, false, false))))
 
-    val e1 = intercept[SparkException] {
-      df5.selectExpr("array_insert(a, b, c)").show()
-    }
-    assert(e1.getCause.isInstanceOf[SparkRuntimeException])
     checkError(
-      exception = e1.getCause.asInstanceOf[SparkRuntimeException],
+      exception = intercept[SparkRuntimeException] {
+        df5.selectExpr("array_insert(a, b, c)").show()
+      },
       errorClass = "INVALID_INDEX_OF_ZERO",
       parameters = Map.empty,
       context = ExpectedContext(
@@ -3632,7 +3675,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       sqlState = None,
       parameters = Map(
         "sqlExpr" -> "\"transform(i, lambdafunction(x, x))\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"",
         "requiredType" -> "\"ARRAY\""),
@@ -3730,7 +3773,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       sqlState = None,
       parameters = Map(
         "sqlExpr" -> "\"map_filter(i, lambdafunction((k > v), k, v))\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"",
         "requiredType" -> "\"MAP\""),
@@ -3747,10 +3790,12 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       matchPVals = true,
       parameters = Map(
         "sqlExpr" -> """"map_filter\(i, lambdafunction\(`>`\(x_\d+, y_\d+\), x_\d+, y_\d+\)\)"""",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"",
-        "requiredType" -> "\"MAP\""))
+        "requiredType" -> "\"MAP\""),
+      queryContext = Array(
+        ExpectedContext(fragment = "map_filter", callSitePattern = getCurrentClassCallSitePattern)))
 
     checkError(
       exception =
@@ -3913,7 +3958,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       sqlState = None,
       parameters = Map(
         "sqlExpr" -> "\"filter(i, lambdafunction(x, x))\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"",
         "requiredType" -> "\"ARRAY\""),
@@ -3930,10 +3975,12 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       matchPVals = true,
       parameters = Map(
         "sqlExpr" -> """"filter\(i, lambdafunction\(x_\d+, x_\d+\)\)"""",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"",
-        "requiredType" -> "\"ARRAY\""))
+        "requiredType" -> "\"ARRAY\""),
+      queryContext = Array(
+        ExpectedContext(fragment = "filter", callSitePattern = getCurrentClassCallSitePattern)))
 
     checkError(
       exception = intercept[AnalysisException] {
@@ -3942,10 +3989,14 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"filter(s, lambdafunction(namedlambdavariable(), namedlambdavariable()))\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"lambdafunction(namedlambdavariable(), namedlambdavariable())\"",
         "inputType" -> "\"STRING\"",
-        "requiredType" -> "\"BOOLEAN\""))
+        "requiredType" -> "\"BOOLEAN\""),
+      ExpectedContext(
+        fragment = "filter(s, x -> x)",
+        start = 0,
+        stop = 16))
 
     checkError(
       exception = intercept[AnalysisException] {
@@ -3954,10 +4005,13 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"filter(s, lambdafunction(namedlambdavariable(), namedlambdavariable()))\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"lambdafunction(namedlambdavariable(), namedlambdavariable())\"",
         "inputType" -> "\"STRING\"",
-        "requiredType" -> "\"BOOLEAN\""))
+        "requiredType" -> "\"BOOLEAN\""),
+      context = ExpectedContext(
+        fragment = "filter",
+        callSitePattern = getCurrentClassCallSitePattern))
 
     checkError(
       exception =
@@ -4092,7 +4146,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       sqlState = None,
       parameters = Map(
         "sqlExpr" -> "\"exists(i, lambdafunction(x, x))\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"",
         "requiredType" -> "\"ARRAY\""),
@@ -4109,10 +4163,12 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       matchPVals = true,
       parameters = Map(
         "sqlExpr" -> """"exists\(i, lambdafunction\(x_\d+, x_\d+\)\)"""",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"",
-        "requiredType" -> "\"ARRAY\""))
+        "requiredType" -> "\"ARRAY\""),
+      queryContext = Array(
+        ExpectedContext(fragment = "exists", callSitePattern = getCurrentClassCallSitePattern)))
 
     checkError(
       exception = intercept[AnalysisException] {
@@ -4121,10 +4177,15 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"exists(s, lambdafunction(namedlambdavariable(), namedlambdavariable()))\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"lambdafunction(namedlambdavariable(), namedlambdavariable())\"",
         "inputType" -> "\"STRING\"",
-        "requiredType" -> "\"BOOLEAN\""))
+        "requiredType" -> "\"BOOLEAN\""),
+      context = ExpectedContext(
+        fragment = "exists(s, x -> x)",
+        start = 0,
+        stop = 16)
+    )
 
     checkError(
       exception = intercept[AnalysisException] {
@@ -4133,10 +4194,12 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"exists(s, lambdafunction(namedlambdavariable(), namedlambdavariable()))\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"lambdafunction(namedlambdavariable(), namedlambdavariable())\"",
         "inputType" -> "\"STRING\"",
-        "requiredType" -> "\"BOOLEAN\""))
+        "requiredType" -> "\"BOOLEAN\""),
+      context =
+        ExpectedContext(fragment = "exists", callSitePattern = getCurrentClassCallSitePattern))
 
     checkError(
       exception = intercept[AnalysisException](df.selectExpr("exists(a, x -> x)")),
@@ -4284,7 +4347,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       sqlState = None,
       parameters = Map(
         "sqlExpr" -> "\"forall(i, lambdafunction(x, x))\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"",
         "requiredType" -> "\"ARRAY\""),
@@ -4301,10 +4364,12 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       matchPVals = true,
       parameters = Map(
         "sqlExpr" -> """"forall\(i, lambdafunction\(x_\d+, x_\d+\)\)"""",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"",
-        "requiredType" -> "\"ARRAY\""))
+        "requiredType" -> "\"ARRAY\""),
+      queryContext = Array(
+        ExpectedContext(fragment = "forall", callSitePattern = getCurrentClassCallSitePattern)))
 
     checkError(
       exception = intercept[AnalysisException] {
@@ -4313,10 +4378,14 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"forall(s, lambdafunction(namedlambdavariable(), namedlambdavariable()))\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"lambdafunction(namedlambdavariable(), namedlambdavariable())\"",
         "inputType" -> "\"STRING\"",
-        "requiredType" -> "\"BOOLEAN\""))
+        "requiredType" -> "\"BOOLEAN\""),
+      context = ExpectedContext(
+        fragment = "forall(s, x -> x)",
+        start = 0,
+        stop = 16))
 
     checkError(
       exception = intercept[AnalysisException] {
@@ -4325,10 +4394,12 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"forall(s, lambdafunction(namedlambdavariable(), namedlambdavariable()))\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"lambdafunction(namedlambdavariable(), namedlambdavariable())\"",
         "inputType" -> "\"STRING\"",
-        "requiredType" -> "\"BOOLEAN\""))
+        "requiredType" -> "\"BOOLEAN\""),
+      context =
+        ExpectedContext(fragment = "forall", callSitePattern = getCurrentClassCallSitePattern))
 
     checkError(
       exception = intercept[AnalysisException](df.selectExpr("forall(a, x -> x)")),
@@ -4343,7 +4414,9 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
     checkError(
       exception = intercept[AnalysisException](df.select(forall(col("a"), x => x))),
       errorClass = "UNRESOLVED_COLUMN.WITH_SUGGESTION",
-      parameters = Map("objectName" -> "`a`", "proposal" -> "`i`, `s`"))
+      parameters = Map("objectName" -> "`a`", "proposal" -> "`i`, `s`"),
+      queryContext = Array(
+        ExpectedContext(fragment = "col", callSitePattern = getCurrentClassCallSitePattern)))
   }
 
   test("aggregate function - array for primitive type not containing null") {
@@ -4559,7 +4632,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         sqlState = None,
         parameters = Map(
           "sqlExpr" -> s""""$agg(i, 0, lambdafunction(x, acc, x), lambdafunction(id, id))"""",
-          "paramIndex" -> "1",
+          "paramIndex" -> "first",
           "inputSql" -> "\"i\"",
           "inputType" -> "\"INT\"",
           "requiredType" -> "\"ARRAY\""),
@@ -4578,10 +4651,12 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       matchPVals = true,
       parameters = Map(
         "sqlExpr" -> """"aggregate\(i, 0, lambdafunction\(y_\d+, x_\d+, y_\d+\), lambdafunction\(x_\d+, x_\d+\)\)"""",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"",
-        "requiredType" -> "\"ARRAY\""))
+        "requiredType" -> "\"ARRAY\""),
+      queryContext = Array(
+        ExpectedContext(fragment = "aggregate", callSitePattern = getCurrentClassCallSitePattern)))
     // scalastyle:on line.size.limit
 
     // scalastyle:off line.size.limit
@@ -4593,11 +4668,15 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
         parameters = Map(
           "sqlExpr" -> s""""$agg(s, 0, lambdafunction(namedlambdavariable(), namedlambdavariable(), namedlambdavariable()), lambdafunction(namedlambdavariable(), namedlambdavariable()))"""",
-          "paramIndex" -> "3",
+          "paramIndex" -> "third",
           "inputSql" -> "\"lambdafunction(namedlambdavariable(), namedlambdavariable(), namedlambdavariable())\"",
           "inputType" -> "\"STRING\"",
           "requiredType" -> "\"INT\""
-        ))
+        ),
+        context = ExpectedContext(
+          fragment = s"$agg(s, 0, (acc, x) -> x)",
+          start = 0,
+          stop = agg.length + 20))
     }
     // scalastyle:on line.size.limit
 
@@ -4609,11 +4688,13 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> """"aggregate(s, 0, lambdafunction(namedlambdavariable(), namedlambdavariable(), namedlambdavariable()), lambdafunction(namedlambdavariable(), namedlambdavariable()))"""",
-        "paramIndex" -> "3",
+        "paramIndex" -> "third",
         "inputSql" -> "\"lambdafunction(namedlambdavariable(), namedlambdavariable(), namedlambdavariable())\"",
         "inputType" -> "\"STRING\"",
         "requiredType" -> "\"INT\""
-      ))
+      ),
+      context =
+        ExpectedContext(fragment = "aggregate", callSitePattern = getCurrentClassCallSitePattern))
     // scalastyle:on line.size.limit
 
     Seq("aggregate", "reduce").foreach { agg =>
@@ -4719,7 +4800,9 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         "sqlExpr" -> """"map_zip_with\(mis, mmi, lambdafunction\(concat\(x_\d+, y_\d+, z_\d+\), x_\d+, y_\d+, z_\d+\)\)"""",
         "functionName" -> "`map_zip_with`",
         "leftType" -> "\"INT\"",
-        "rightType" -> "\"MAP<INT, INT>\""))
+        "rightType" -> "\"MAP<INT, INT>\""),
+      queryContext = Array(
+        ExpectedContext(fragment = "map_zip_with", callSitePattern = getCurrentClassCallSitePattern)))
     // scalastyle:on line.size.limit
 
     checkError(
@@ -4730,7 +4813,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       sqlState = None,
       parameters = Map(
         "sqlExpr" -> "\"map_zip_with(i, mis, lambdafunction(concat(x, y, z), x, y, z))\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"", "requiredType" -> "\"MAP\""),
       context = ExpectedContext(
@@ -4747,9 +4830,11 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       matchPVals = true,
       parameters = Map(
         "sqlExpr" -> """"map_zip_with\(i, mis, lambdafunction\(concat\(x_\d+, y_\d+, z_\d+\), x_\d+, y_\d+, z_\d+\)\)"""",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
-        "inputType" -> "\"INT\"", "requiredType" -> "\"MAP\""))
+        "inputType" -> "\"INT\"", "requiredType" -> "\"MAP\""),
+      queryContext = Array(
+        ExpectedContext(fragment = "map_zip_with", callSitePattern = getCurrentClassCallSitePattern)))
     // scalastyle:on line.size.limit
 
     checkError(
@@ -4760,7 +4845,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       sqlState = None,
       parameters = Map(
         "sqlExpr" -> "\"map_zip_with(mis, i, lambdafunction(concat(x, y, z), x, y, z))\"",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"", "requiredType" -> "\"MAP\""),
       context = ExpectedContext(
@@ -4777,9 +4862,11 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       matchPVals = true,
       parameters = Map(
         "sqlExpr" -> """"map_zip_with\(mis, i, lambdafunction\(concat\(x_\d+, y_\d+, z_\d+\), x_\d+, y_\d+, z_\d+\)\)"""",
-        "paramIndex" -> "2",
+        "paramIndex" -> "second",
         "inputSql" -> "\"i\"",
-        "inputType" -> "\"INT\"", "requiredType" -> "\"MAP\""))
+        "inputType" -> "\"INT\"", "requiredType" -> "\"MAP\""),
+      queryContext = Array(
+        ExpectedContext(fragment = "map_zip_with", callSitePattern = getCurrentClassCallSitePattern)))
     // scalastyle:on line.size.limit
 
     checkError(
@@ -4854,10 +4941,10 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       checkAnswer(dfExample2.select(transform_keys(col("j"), (k, v) => k + v)),
         Seq(Row(Map(2.0 -> 1.0, 3.4 -> 1.4, 4.7 -> 1.7))))
 
-      intercept[SparkException] {
+      intercept[SparkRuntimeException] {
         dfExample3.selectExpr("transform_keys(x, (k, v) ->  k % 2 = 0 OR v)").collect()
       }
-      intercept[SparkException] {
+      intercept[SparkRuntimeException] {
         dfExample3.select(transform_keys(col("x"), (k, v) => k % 2 === 0 || v)).collect()
       }
       withSQLConf(SQLConf.MAP_KEY_DEDUP_POLICY.key -> SQLConf.MapKeyDedupPolicy.LAST_WIN.toString) {
@@ -4926,22 +5013,18 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         stop = 35)
     )
 
-    val ex3 = intercept[SparkException] {
-      dfExample1.selectExpr("transform_keys(i, (k, v) -> v)").show()
-    }
-    assert(ex3.getCause.isInstanceOf[SparkRuntimeException])
     checkError(
-      exception = ex3.getCause.asInstanceOf[SparkRuntimeException],
+      exception = intercept[SparkRuntimeException] {
+        dfExample1.selectExpr("transform_keys(i, (k, v) -> v)").show()
+      },
       errorClass = "NULL_MAP_KEY",
       parameters = Map.empty
     )
 
-    val ex3a = intercept[Exception] {
-      dfExample1.select(transform_keys(col("i"), (k, v) => v)).show()
-    }
-    assert(ex3a.getCause.isInstanceOf[SparkRuntimeException])
     checkError(
-      exception = ex3a.getCause.asInstanceOf[SparkRuntimeException],
+      exception = intercept[SparkRuntimeException] {
+        dfExample1.select(transform_keys(col("i"), (k, v) => v)).show()
+      },
       errorClass = "NULL_MAP_KEY",
       parameters = Map.empty
     )
@@ -4954,7 +5037,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       sqlState = None,
       parameters = Map(
         "sqlExpr" -> "\"transform_keys(j, lambdafunction((k + 1), k, v))\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"j\"",
         "inputType" -> "\"ARRAY<INT>\"",
         "requiredType" -> "\"MAP\""),
@@ -5214,7 +5297,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         sqlState = None,
         parameters = Map(
           "sqlExpr" -> "\"transform_values(x, lambdafunction((k + 1), k, v))\"",
-          "paramIndex" -> "1",
+          "paramIndex" -> "first",
           "inputSql" -> "\"x\"",
           "inputType" -> "\"ARRAY<INT>\"",
           "requiredType" -> "\"MAP\""),
@@ -5232,10 +5315,14 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         parameters = Map(
           "sqlExpr" ->
               """"transform_values\(x, lambdafunction\(`\+`\(x_\d+, 1\), x_\d+, y_\d+\)\)"""",
-          "paramIndex" -> "1",
+          "paramIndex" -> "first",
           "inputSql" -> "\"x\"",
           "inputType" -> "\"ARRAY<INT>\"",
-          "requiredType" -> "\"MAP\""))
+          "requiredType" -> "\"MAP\""),
+        queryContext = Array(
+          ExpectedContext(
+            fragment = "transform_values",
+            callSitePattern = getCurrentClassCallSitePattern)))
     }
 
     testInvalidLambdaFunctions()
@@ -5354,7 +5441,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       sqlState = None,
       parameters = Map(
         "sqlExpr" -> "\"zip_with(i, a2, lambdafunction(x, acc, x))\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"",
         "requiredType" -> "\"ARRAY\""),
@@ -5372,10 +5459,12 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       parameters = Map(
         "sqlExpr" ->
           """"zip_with\(i, a2, lambdafunction\(y_\d+, x_\d+, y_\d+\)\)"""",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "inputSql" -> "\"i\"",
         "inputType" -> "\"INT\"",
-        "requiredType" -> "\"ARRAY\""))
+        "requiredType" -> "\"ARRAY\""),
+      queryContext = Array(
+        ExpectedContext(fragment = "zip_with", callSitePattern = getCurrentClassCallSitePattern)))
 
     checkError(
       exception =
@@ -5562,12 +5651,10 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
 
   test("SPARK-24734: Fix containsNull of Concat for array type") {
     val df = Seq((Seq(1), Seq[Integer](null), Seq("a", "b"))).toDF("k1", "k2", "v")
-    val e1 = intercept[SparkException] {
-      df.select(map_from_arrays(concat($"k1", $"k2"), $"v")).show()
-    }
-    assert(e1.getCause.isInstanceOf[SparkRuntimeException])
     checkError(
-      exception = e1.getCause.asInstanceOf[SparkRuntimeException],
+      exception = intercept[SparkRuntimeException] {
+        df.select(map_from_arrays(concat($"k1", $"k2"), $"v")).show()
+      },
       errorClass = "NULL_MAP_KEY",
       parameters = Map.empty
     )
@@ -5631,7 +5718,9 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       parameters = Map(
         "sqlExpr" -> "\"map(m, 1)\"",
         "keyType" -> "\"MAP<INT, STRING>\""
-      )
+      ),
+      context =
+        ExpectedContext(fragment = "map", callSitePattern = getCurrentClassCallSitePattern)
     )
     checkAnswer(
       df.select(map(map_entries($"m"), lit(1))),
@@ -5749,11 +5838,14 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"array_compact(a)\"",
-        "paramIndex" -> "1",
+        "paramIndex" -> "first",
         "requiredType" -> "\"ARRAY\"",
         "inputSql" -> "\"a\"",
         "inputType" -> "\"INT\""
-      ))
+      ),
+      context = ExpectedContext(
+        fragment = "array_compact",
+        callSitePattern = getCurrentClassCallSitePattern))
   }
 
   test("array_append -> Unit Test cases for the function ") {
@@ -5772,7 +5864,9 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
         "dataType" -> "\"ARRAY\"",
         "leftType" -> "\"ARRAY<STRING>\"",
         "rightType" -> "\"INT\"",
-        "sqlExpr" -> "\"array_append(a, b)\"")
+        "sqlExpr" -> "\"array_append(a, b)\""),
+      context =
+        ExpectedContext(fragment = "array_append", callSitePattern = getCurrentClassCallSitePattern)
     )
 
     checkAnswer(df1.selectExpr("array_append(a, 3)"), Seq(Row(Seq(3, 2, 5, 1, 2, 3))))
@@ -5818,7 +5912,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
       errorClass = "DATATYPE_MISMATCH.UNEXPECTED_INPUT_TYPE",
       parameters = Map(
         "sqlExpr" -> "\"array_append(a, b)\"",
-        "paramIndex" -> "0",
+        "paramIndex" -> "first",
         "requiredType" -> "\"ARRAY\"",
         "inputSql" -> "\"a\"",
         "inputType" -> "\"STRING\""
@@ -5919,7 +6013,7 @@ class DataFrameFunctionsSuite extends QueryTest with SharedSparkSession {
     checkError(
       exception = intercept[SparkException] {
         df1.map(r => df2.count() * r.getInt(0)).collect()
-      }.getCause.asInstanceOf[SparkException],
+      },
       errorClass = "CANNOT_INVOKE_IN_TRANSFORMATIONS",
       parameters = Map.empty
     )

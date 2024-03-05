@@ -22,6 +22,7 @@ import java.util.{Locale, TimeZone}
 
 import scala.util.control.NonFatal
 
+import org.apache.spark.SparkUnsupportedOperationException
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.connector.expressions.Expression
 import org.apache.spark.sql.execution.datasources.jdbc.JDBCOptions
@@ -32,7 +33,10 @@ import org.apache.spark.sql.types._
 private case object OracleDialect extends JdbcDialect {
   private[jdbc] val BINARY_FLOAT = 100
   private[jdbc] val BINARY_DOUBLE = 101
-  private[jdbc] val TIMESTAMPTZ = -101
+  private[jdbc] val TIMESTAMP_TZ = -101
+  // oracle.jdbc.OracleType.TIMESTAMP_WITH_LOCAL_TIME_ZONE
+  private[jdbc] val TIMESTAMP_LTZ = -102
+
 
   override def canHandle(url: String): Boolean =
     url.toLowerCase(Locale.ROOT).startsWith("jdbc:oracle")
@@ -55,8 +59,11 @@ private case object OracleDialect extends JdbcDialect {
     override def visitAggregateFunction(
         funcName: String, isDistinct: Boolean, inputs: Array[String]): String =
       if (isDistinct && distinctUnsupportedAggregateFunctions.contains(funcName)) {
-        throw new UnsupportedOperationException(s"${this.getClass.getSimpleName} does not " +
-          s"support aggregate function: $funcName with DISTINCT");
+        throw new SparkUnsupportedOperationException(
+          errorClass = "_LEGACY_ERROR_TEMP_3184",
+          messageParameters = Map(
+            "class" -> this.getClass.getSimpleName,
+            "funcName" -> funcName))
       } else {
         super.visitAggregateFunction(funcName, isDistinct, inputs)
       }
@@ -100,8 +107,12 @@ private case object OracleDialect extends JdbcDialect {
           case _ if scale == -127L => Option(DecimalType(DecimalType.MAX_PRECISION, 10))
           case _ => None
         }
-      case TIMESTAMPTZ if supportTimeZoneTypes
-        => Some(TimestampType) // Value for Timestamp with Time Zone in Oracle
+      case TIMESTAMP_TZ if supportTimeZoneTypes =>
+        // Value for Timestamp with Time Zone in Oracle
+        Some(TimestampType)
+      case TIMESTAMP_LTZ =>
+        // Value for Timestamp with Local Time Zone in Oracle
+        Some(TimestampType)
       case BINARY_FLOAT => Some(FloatType) // Value for OracleTypes.BINARY_FLOAT
       case BINARY_DOUBLE => Some(DoubleType) // Value for OracleTypes.BINARY_DOUBLE
       case _ => None
@@ -118,7 +129,7 @@ private case object OracleDialect extends JdbcDialect {
     case DoubleType => Some(JdbcType("NUMBER(19, 4)", java.sql.Types.DOUBLE))
     case ByteType => Some(JdbcType("NUMBER(3)", java.sql.Types.SMALLINT))
     case ShortType => Some(JdbcType("NUMBER(5)", java.sql.Types.SMALLINT))
-    case StringType => Some(JdbcType("CLOB", java.sql.Types.CLOB))
+    case StringType => Some(JdbcType("VARCHAR2(255)", java.sql.Types.VARCHAR))
     case _ => None
   }
 

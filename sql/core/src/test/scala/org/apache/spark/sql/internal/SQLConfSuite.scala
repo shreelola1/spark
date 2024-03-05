@@ -22,10 +22,11 @@ import java.util.TimeZone
 import org.apache.hadoop.fs.Path
 import org.apache.logging.log4j.Level
 
-import org.apache.spark.{SPARK_DOC_ROOT, SparkNoSuchElementException}
+import org.apache.spark.{SPARK_DOC_ROOT, SparkIllegalArgumentException, SparkNoSuchElementException}
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.catalyst.util.DateTimeTestUtils.MIT
+import org.apache.spark.sql.execution.datasources.parquet.ParquetCompressionCodec.{GZIP, LZO}
 import org.apache.spark.sql.internal.StaticSQLConf._
 import org.apache.spark.sql.test.{SharedSparkSession, TestSQLContext}
 import org.apache.spark.util.Utils
@@ -368,7 +369,7 @@ class SQLConfSuite extends QueryTest with SharedSparkSession {
 
     assert(spark.conf.get(fallback.key) ===
       SQLConf.PARQUET_COMPRESSION.defaultValue.get)
-    assert(spark.conf.get(fallback.key, "lzo") === "lzo")
+    assert(spark.conf.get(fallback.key, LZO.lowerCaseName()) === LZO.lowerCaseName())
 
     val displayValue = spark.sessionState.conf.getAllDefinedConfs
       .find { case (key, _, _, _) => key == fallback.key }
@@ -376,17 +377,17 @@ class SQLConfSuite extends QueryTest with SharedSparkSession {
       .get
     assert(displayValue === fallback.defaultValueString)
 
-    spark.conf.set(SQLConf.PARQUET_COMPRESSION, "gzip")
-    assert(spark.conf.get(fallback.key) === "gzip")
+    spark.conf.set(SQLConf.PARQUET_COMPRESSION, GZIP.lowerCaseName())
+    assert(spark.conf.get(fallback.key) === GZIP.lowerCaseName())
 
-    spark.conf.set(fallback, "lzo")
-    assert(spark.conf.get(fallback.key) === "lzo")
+    spark.conf.set(fallback, LZO.lowerCaseName())
+    assert(spark.conf.get(fallback.key) === LZO.lowerCaseName())
 
     val newDisplayValue = spark.sessionState.conf.getAllDefinedConfs
       .find { case (key, _, _, _) => key == fallback.key }
       .map { case (_, v, _, _) => v }
       .get
-    assert(newDisplayValue === "lzo")
+    assert(newDisplayValue === LZO.lowerCaseName())
 
     SQLConf.unregister(fallback)
   }
@@ -444,15 +445,19 @@ class SQLConfSuite extends QueryTest with SharedSparkSession {
     spark.conf.set(SQLConf.SESSION_LOCAL_TIMEZONE.key, "GMT+8:00")
     assert(sql(s"set ${SQLConf.SESSION_LOCAL_TIMEZONE.key}").head().getString(1) === "GMT+8:00")
 
-    intercept[IllegalArgumentException] {
+    intercept[SparkIllegalArgumentException] {
       spark.conf.set(SQLConf.SESSION_LOCAL_TIMEZONE.key, "pst")
     }
-    val e = intercept[IllegalArgumentException] {
-      spark.conf.set(SQLConf.SESSION_LOCAL_TIMEZONE.key, "Asia/shanghai")
-    }
-    assert(e.getMessage ===
-      s"'Asia/shanghai' in ${SQLConf.SESSION_LOCAL_TIMEZONE.key} is invalid." +
-        " Cannot resolve the given timezone with ZoneId.of(_, ZoneId.SHORT_IDS)")
+
+    val invalidTz = "Asia/shanghai"
+    checkError(
+      exception = intercept[SparkIllegalArgumentException] {
+        spark.conf.set(SQLConf.SESSION_LOCAL_TIMEZONE.key, invalidTz)
+      },
+      errorClass = "INVALID_CONF_VALUE.TIME_ZONE",
+      parameters = Map(
+        "confValue" -> invalidTz,
+        "confName" -> SQLConf.SESSION_LOCAL_TIMEZONE.key))
   }
 
   test("set time zone") {
@@ -463,9 +468,15 @@ class SQLConfSuite extends QueryTest with SharedSparkSession {
     sql("set time zone local")
     assert(spark.conf.get(SQLConf.SESSION_LOCAL_TIMEZONE) === TimeZone.getDefault.getID)
 
-    val e1 = intercept[IllegalArgumentException](sql("set time zone 'invalid'"))
-    assert(e1.getMessage === s"'invalid' in ${SQLConf.SESSION_LOCAL_TIMEZONE.key} is invalid." +
-      " Cannot resolve the given timezone with ZoneId.of(_, ZoneId.SHORT_IDS)")
+    val tz = "Invalid TZ"
+    checkError(
+      exception = intercept[SparkIllegalArgumentException] {
+        sql(s"SET TIME ZONE '$tz'").collect()
+      },
+      errorClass = "INVALID_CONF_VALUE.TIME_ZONE",
+      parameters = Map(
+        "confValue" -> tz,
+        "confName" -> SQLConf.SESSION_LOCAL_TIMEZONE.key))
 
     (-18 to 18).map(v => (v, s"interval '$v' hours")).foreach { case (i, interval) =>
       sql(s"set time zone $interval")

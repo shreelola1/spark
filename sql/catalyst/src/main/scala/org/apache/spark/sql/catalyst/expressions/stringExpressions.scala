@@ -17,12 +17,14 @@
 
 package org.apache.spark.sql.catalyst.expressions
 
+import java.io.UnsupportedEncodingException
 import java.text.{BreakIterator, DecimalFormat, DecimalFormatSymbols}
 import java.util.{Base64 => JBase64}
 import java.util.{HashMap, Locale, Map => JMap}
 
 import scala.collection.mutable.ArrayBuffer
 
+import org.apache.spark.{QueryContext, SparkException}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.{ExpressionBuilder, FunctionRegistry, TypeCheckResult}
 import org.apache.spark.sql.catalyst.analysis.TypeCheckResult.DataTypeMismatch
@@ -30,15 +32,16 @@ import org.apache.spark.sql.catalyst.expressions.Cast._
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
-import org.apache.spark.sql.catalyst.trees.{BinaryLike, SQLQueryContext}
+import org.apache.spark.sql.catalyst.trees.BinaryLike
 import org.apache.spark.sql.catalyst.trees.TreePattern.{TreePattern, UPPER_OR_LOWER}
-import org.apache.spark.sql.catalyst.util.{ArrayData, GenericArrayData, TypeUtils}
+import org.apache.spark.sql.catalyst.util.{ArrayData, CollationFactory, GenericArrayData, TypeUtils}
 import org.apache.spark.sql.errors.{QueryCompilationErrors, QueryExecutionErrors}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.UTF8StringBuilder
 import org.apache.spark.unsafe.array.ByteArrayMethods
 import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
+import org.apache.spark.util.ArrayImplicits._
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // This file defines expressions for string operations.
@@ -296,7 +299,7 @@ case class Elt(
         return DataTypeMismatch(
           errorSubClass = "UNEXPECTED_INPUT_TYPE",
           messageParameters = Map(
-            "paramIndex" -> "1",
+            "paramIndex" -> ordinalNumber(0),
             "requiredType" -> toSQLType(IntegerType),
             "inputSql" -> toSQLExpr(indexExpr),
             "inputType" -> toSQLType(indexType)))
@@ -305,14 +308,14 @@ case class Elt(
         return DataTypeMismatch(
           errorSubClass = "UNEXPECTED_INPUT_TYPE",
           messageParameters = Map(
-            "paramIndex" -> "2...",
+            "paramIndex" -> (ordinalNumber(1) + "..."),
             "requiredType" -> (toSQLType(StringType) + " or " + toSQLType(BinaryType)),
-            "inputSql" -> inputExprs.map(toSQLExpr(_)).mkString(","),
-            "inputType" -> inputTypes.map(toSQLType(_)).mkString(",")
+            "inputSql" -> inputExprs.map(toSQLExpr).mkString(","),
+            "inputType" -> inputTypes.map(toSQLType).mkString(",")
           )
         )
       }
-      TypeUtils.checkForSameTypeInputExpr(inputTypes, prettyName)
+      TypeUtils.checkForSameTypeInputExpr(inputTypes.toImmutableArraySeq, prettyName)
     }
   }
 
@@ -355,7 +358,7 @@ case class Elt(
     }
 
     val codes = ctx.splitExpressionsWithCurrentInputs(
-      expressions = assignInputValue,
+      expressions = assignInputValue.toImmutableArraySeq,
       funcName = "eltFunc",
       extraArguments = ("int", indexVal) :: Nil,
       returnType = CodeGenerator.JAVA_BOOLEAN,
@@ -411,7 +414,7 @@ case class Elt(
   override protected def withNewChildrenInternal(newChildren: IndexedSeq[Expression]): Elt =
     copy(children = newChildren)
 
-  override def initQueryContext(): Option[SQLQueryContext] = if (failOnError) {
+  override def initQueryContext(): Option[QueryContext] = if (failOnError) {
     Some(origin.context)
   } else {
     None
@@ -494,9 +497,31 @@ case class Lower(child: Expression)
 abstract class StringPredicate extends BinaryExpression
   with Predicate with ImplicitCastInputTypes with NullIntolerant {
 
+  final lazy val collationId: Int = left.dataType.asInstanceOf[StringType].collationId
+
   def compare(l: UTF8String, r: UTF8String): Boolean
 
   override def inputTypes: Seq[DataType] = Seq(StringType, StringType)
+
+  override def checkInputDataTypes(): TypeCheckResult = {
+    val checkResult = super.checkInputDataTypes()
+    if (checkResult.isFailure) {
+      return checkResult
+    }
+    // Additional check needed for collation compatibility
+    val rightCollationId: Int = right.dataType.asInstanceOf[StringType].collationId
+    if (collationId != rightCollationId) {
+      DataTypeMismatch(
+        errorSubClass = "COLLATION_MISMATCH",
+        messageParameters = Map(
+          "collationNameLeft" -> CollationFactory.fetchCollation(collationId).collationName,
+          "collationNameRight" -> CollationFactory.fetchCollation(rightCollationId).collationName
+        )
+      )
+    } else {
+      TypeCheckResult.TypeCheckSuccess
+    }
+  }
 
   protected override def nullSafeEval(input1: Any, input2: Any): Any =
     compare(input1.asInstanceOf[UTF8String], input2.asInstanceOf[UTF8String])
@@ -583,9 +608,38 @@ object ContainsExpressionBuilder extends StringBinaryPredicateExpressionBuilderB
 }
 
 case class Contains(left: Expression, right: Expression) extends StringPredicate {
-  override def compare(l: UTF8String, r: UTF8String): Boolean = l.contains(r)
+  override def checkInputDataTypes(): TypeCheckResult = {
+    val checkResult = super.checkInputDataTypes()
+    if (checkResult.isFailure) {
+      return checkResult
+    }
+    // Additional check needed for collation support
+    if (!CollationFactory.fetchCollation(collationId).isBinaryCollation
+      && collationId != CollationFactory.LOWERCASE_COLLATION_ID) {
+      throw new SparkException(
+        errorClass = "UNSUPPORTED_COLLATION.FOR_FUNCTION",
+        messageParameters = Map(
+          "functionName" -> "contains",
+          "collationName" -> CollationFactory.fetchCollation(collationId).collationName),
+        cause = null
+      )
+    } else {
+      TypeCheckResult.TypeCheckSuccess
+    }
+  }
+  override def compare(l: UTF8String, r: UTF8String): Boolean = {
+    if (CollationFactory.fetchCollation(collationId).isBinaryCollation) {
+      l.contains(r)
+    } else {
+      l.contains(r, collationId)
+    }
+  }
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
-    defineCodeGen(ctx, ev, (c1, c2) => s"($c1).contains($c2)")
+    if (CollationFactory.fetchCollation(collationId).isBinaryCollation) {
+      defineCodeGen(ctx, ev, (c1, c2) => s"$c1.contains($c2)")
+    } else {
+      defineCodeGen(ctx, ev, (c1, c2) => s"$c1.contains($c2, $collationId)")
+    }
   }
   override protected def withNewChildrenInternal(
     newLeft: Expression, newRight: Expression): Contains = copy(left = newLeft, right = newRight)
@@ -620,9 +674,20 @@ object StartsWithExpressionBuilder extends StringBinaryPredicateExpressionBuilde
 }
 
 case class StartsWith(left: Expression, right: Expression) extends StringPredicate {
-  override def compare(l: UTF8String, r: UTF8String): Boolean = l.startsWith(r)
+  override def compare(l: UTF8String, r: UTF8String): Boolean = {
+    if (CollationFactory.fetchCollation(collationId).isBinaryCollation) {
+      l.startsWith(r)
+    } else {
+      l.startsWith(r, collationId)
+    }
+  }
+
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
-    defineCodeGen(ctx, ev, (c1, c2) => s"($c1).startsWith($c2)")
+    if (CollationFactory.fetchCollation(collationId).isBinaryCollation) {
+      defineCodeGen(ctx, ev, (c1, c2) => s"$c1.startsWith($c2)")
+    } else {
+      defineCodeGen(ctx, ev, (c1, c2) => s"$c1.startsWith($c2, $collationId)")
+    }
   }
   override protected def withNewChildrenInternal(
     newLeft: Expression, newRight: Expression): StartsWith = copy(left = newLeft, right = newRight)
@@ -657,9 +722,20 @@ object EndsWithExpressionBuilder extends StringBinaryPredicateExpressionBuilderB
 }
 
 case class EndsWith(left: Expression, right: Expression) extends StringPredicate {
-  override def compare(l: UTF8String, r: UTF8String): Boolean = l.endsWith(r)
+  override def compare(l: UTF8String, r: UTF8String): Boolean = {
+    if (CollationFactory.fetchCollation(collationId).isBinaryCollation) {
+      l.endsWith(r)
+    } else {
+      l.endsWith(r, collationId)
+    }
+  }
+
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
-    defineCodeGen(ctx, ev, (c1, c2) => s"($c1).endsWith($c2)")
+    if (CollationFactory.fetchCollation(collationId).isBinaryCollation) {
+      defineCodeGen(ctx, ev, (c1, c2) => s"$c1.endsWith($c2)")
+    } else {
+      defineCodeGen(ctx, ev, (c1, c2) => s"$c1.endsWith($c2, $collationId)")
+    }
   }
   override protected def withNewChildrenInternal(
     newLeft: Expression, newRight: Expression): EndsWith = copy(left = newLeft, right = newRight)
@@ -2231,16 +2307,18 @@ case class Levenshtein(
     val resultCode = s"${ev.value} = ${leftGen.value}.levenshteinDistance(" +
       s"${rightGen.value}, ${thresholdGen.value});"
     if (nullable) {
-      val nullSafeEval = leftGen.code + ctx.nullSafeExec(children.head.nullable, leftGen.isNull) {
-        rightGen.code + ctx.nullSafeExec(children(1).nullable, rightGen.isNull) {
-          thresholdGen.code + ctx.nullSafeExec(thresholdExpr.nullable, thresholdGen.isNull) {
-            s"""
-              ${ev.isNull} = false;
-              $resultCode
-             """
+      val nullSafeEval =
+        leftGen.code.toString + ctx.nullSafeExec(children.head.nullable, leftGen.isNull) {
+          rightGen.code.toString + ctx.nullSafeExec(children(1).nullable, rightGen.isNull) {
+            thresholdGen.code.toString +
+              ctx.nullSafeExec(thresholdExpr.nullable, thresholdGen.isNull) {
+                s"""
+                  ${ev.isNull} = false;
+                  $resultCode
+                 """
+              }
           }
         }
-      }
       ev.copy(code = code"""
         boolean ${ev.isNull} = true;
         ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
@@ -2259,14 +2337,15 @@ case class Levenshtein(
     val rightGen = children(1).genCode(ctx)
     val resultCode = s"${ev.value} = ${leftGen.value}.levenshteinDistance(${rightGen.value});"
     if (nullable) {
-      val nullSafeEval = leftGen.code + ctx.nullSafeExec(children.head.nullable, leftGen.isNull) {
-        rightGen.code + ctx.nullSafeExec(children(1).nullable, rightGen.isNull) {
-          s"""
-            ${ev.isNull} = false;
-            $resultCode
-           """
+      val nullSafeEval =
+        leftGen.code.toString + ctx.nullSafeExec(children.head.nullable, leftGen.isNull) {
+          rightGen.code.toString + ctx.nullSafeExec(children(1).nullable, rightGen.isNull) {
+            s"""
+              ${ev.isNull} = false;
+              $resultCode
+             """
+          }
         }
-      }
       ev.copy(code = code"""
         boolean ${ev.isNull} = true;
         ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
@@ -2573,7 +2652,7 @@ object Decode {
             default = search
           }
         }
-        CaseWhen(branches.seq.toSeq, default)
+        CaseWhen(branches.toSeq, default)
     }
   }
 }
@@ -2587,6 +2666,11 @@ object Decode {
       to each search value in order. If expr is equal to a search value, _FUNC_ returns
       the corresponding result. If no match is found, then it returns default. If default
       is omitted, it returns null.
+  """,
+  arguments = """
+    Arguments:
+      * bin - a binary expression to decode
+      * charset - one of the charsets 'US-ASCII', 'ISO-8859-1', 'UTF-8', 'UTF-16BE', 'UTF-16LE', 'UTF-16' to decode `bin` into a STRING. It is case insensitive.
   """,
   examples = """
     Examples:
@@ -2617,43 +2701,69 @@ case class Decode(params: Seq[Expression], replacement: Expression)
 }
 
 /**
- * Decodes the first argument into a String using the provided character set
- * (one of 'US-ASCII', 'ISO-8859-1', 'UTF-8', 'UTF-16BE', 'UTF-16LE', 'UTF-16').
- * If either argument is null, the result will also be null.
+ * Decodes the first argument into a String using the provided character set.
  */
 // scalastyle:off line.size.limit
 @ExpressionDescription(
-  usage = "_FUNC_(bin, charset) - Decodes the first argument using the second argument character set.",
+  usage = "_FUNC_(bin, charset) - Decodes the first argument using the second argument character set. If either argument is null, the result will also be null.",
   examples = """
     Examples:
       > SELECT _FUNC_(encode('abc', 'utf-8'), 'utf-8');
        abc
   """,
+  arguments = """
+    Arguments:
+      * bin - a binary expression to decode
+      * charset - one of the charsets 'US-ASCII', 'ISO-8859-1', 'UTF-8', 'UTF-16BE', 'UTF-16LE', 'UTF-16' to decode `bin` into a STRING. It is case insensitive.
+  """,
   since = "1.5.0",
   group = "string_funcs")
 // scalastyle:on line.size.limit
-case class StringDecode(bin: Expression, charset: Expression)
+case class StringDecode(bin: Expression, charset: Expression, legacyCharsets: Boolean)
   extends BinaryExpression with ImplicitCastInputTypes with NullIntolerant {
+
+  def this(bin: Expression, charset: Expression) =
+    this(bin, charset, SQLConf.get.legacyJavaCharsets)
 
   override def left: Expression = bin
   override def right: Expression = charset
   override def dataType: DataType = StringType
   override def inputTypes: Seq[DataType] = Seq(BinaryType, StringType)
 
+  private val supportedCharsets = Set(
+    "US-ASCII", "ISO-8859-1", "UTF-8", "UTF-16BE", "UTF-16LE", "UTF-16")
+
   protected override def nullSafeEval(input1: Any, input2: Any): Any = {
     val fromCharset = input2.asInstanceOf[UTF8String].toString
-    UTF8String.fromString(new String(input1.asInstanceOf[Array[Byte]], fromCharset))
+    try {
+      if (legacyCharsets || supportedCharsets.contains(fromCharset.toUpperCase(Locale.ROOT))) {
+        UTF8String.fromString(new String(input1.asInstanceOf[Array[Byte]], fromCharset))
+      } else throw new UnsupportedEncodingException
+    } catch {
+      case _: UnsupportedEncodingException =>
+        throw QueryExecutionErrors.invalidCharsetError(prettyName, fromCharset)
+    }
   }
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
-    nullSafeCodeGen(ctx, ev, (bytes, charset) =>
+    nullSafeCodeGen(ctx, ev, (bytes, charset) => {
+      val fromCharset = ctx.freshName("fromCharset")
+      val sc = JavaCode.global(
+        ctx.addReferenceObj("supportedCharsets", supportedCharsets),
+        supportedCharsets.getClass)
       s"""
+        String $fromCharset = $charset.toString();
         try {
-          ${ev.value} = UTF8String.fromString(new String($bytes, $charset.toString()));
+          if ($legacyCharsets || $sc.contains($fromCharset.toUpperCase(java.util.Locale.ROOT))) {
+            ${ev.value} = UTF8String.fromString(new String($bytes, $fromCharset));
+          } else {
+            throw new java.io.UnsupportedEncodingException();
+          }
         } catch (java.io.UnsupportedEncodingException e) {
-          org.apache.spark.unsafe.Platform.throwException(e);
+          throw QueryExecutionErrors.invalidCharsetError("$prettyName", $fromCharset);
         }
-      """)
+      """
+    })
   }
 
   override protected def withNewChildrenInternal(
@@ -2663,14 +2773,21 @@ case class StringDecode(bin: Expression, charset: Expression)
   override def prettyName: String = "decode"
 }
 
+object StringDecode {
+  def apply(bin: Expression, charset: Expression): StringDecode = new StringDecode(bin, charset)
+}
+
 /**
- * Encodes the first argument into a BINARY using the provided character set
- * (one of 'US-ASCII', 'ISO-8859-1', 'UTF-8', 'UTF-16BE', 'UTF-16LE', 'UTF-16').
- * If either argument is null, the result will also be null.
+ * Encode the given string to a binary using the provided charset.
  */
 // scalastyle:off line.size.limit
 @ExpressionDescription(
-  usage = "_FUNC_(str, charset) - Encodes the first argument using the second argument character set.",
+  usage = "_FUNC_(str, charset) - Encodes the first argument using the second argument character set. If either argument is null, the result will also be null.",
+  arguments = """
+    Arguments:
+      * str - a string expression
+      * charset - one of the charsets 'US-ASCII', 'ISO-8859-1', 'UTF-8', 'UTF-16BE', 'UTF-16LE', 'UTF-16' to encode `str` into a BINARY. It is case insensitive.
+  """,
   examples = """
     Examples:
       > SELECT _FUNC_('abc', 'utf-8');
@@ -2679,31 +2796,58 @@ case class StringDecode(bin: Expression, charset: Expression)
   since = "1.5.0",
   group = "string_funcs")
 // scalastyle:on line.size.limit
-case class Encode(value: Expression, charset: Expression)
+case class Encode(str: Expression, charset: Expression, legacyCharsets: Boolean)
   extends BinaryExpression with ImplicitCastInputTypes with NullIntolerant {
 
-  override def left: Expression = value
+  def this(value: Expression, charset: Expression) =
+    this(value, charset, SQLConf.get.legacyJavaCharsets)
+
+  override def left: Expression = str
   override def right: Expression = charset
   override def dataType: DataType = BinaryType
   override def inputTypes: Seq[DataType] = Seq(StringType, StringType)
 
+  private val supportedCharsets = Set(
+    "US-ASCII", "ISO-8859-1", "UTF-8", "UTF-16BE", "UTF-16LE", "UTF-16")
+
   protected override def nullSafeEval(input1: Any, input2: Any): Any = {
     val toCharset = input2.asInstanceOf[UTF8String].toString
-    input1.asInstanceOf[UTF8String].toString.getBytes(toCharset)
+    try {
+      if (legacyCharsets || supportedCharsets.contains(toCharset.toUpperCase(Locale.ROOT))) {
+        input1.asInstanceOf[UTF8String].toString.getBytes(toCharset)
+      } else throw new UnsupportedEncodingException
+    } catch {
+      case _: UnsupportedEncodingException =>
+        throw QueryExecutionErrors.invalidCharsetError(prettyName, toCharset)
+    }
   }
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
-    nullSafeCodeGen(ctx, ev, (string, charset) =>
+    nullSafeCodeGen(ctx, ev, (string, charset) => {
+      val toCharset = ctx.freshName("toCharset")
+      val sc = JavaCode.global(
+        ctx.addReferenceObj("supportedCharsets", supportedCharsets),
+        supportedCharsets.getClass)
       s"""
+        String $toCharset = $charset.toString();
         try {
-          ${ev.value} = $string.toString().getBytes($charset.toString());
+          if ($legacyCharsets || $sc.contains($toCharset.toUpperCase(java.util.Locale.ROOT))) {
+            ${ev.value} = $string.toString().getBytes($toCharset);
+          } else {
+            throw new java.io.UnsupportedEncodingException();
+          }
         } catch (java.io.UnsupportedEncodingException e) {
-          org.apache.spark.unsafe.Platform.throwException(e);
-        }""")
+          throw QueryExecutionErrors.invalidCharsetError("$prettyName", $toCharset);
+        }"""
+    })
   }
 
   override protected def withNewChildrenInternal(
-    newLeft: Expression, newRight: Expression): Encode = copy(value = newLeft, charset = newRight)
+    newLeft: Expression, newRight: Expression): Encode = copy(str = newLeft, charset = newRight)
+}
+
+object Encode {
+  def apply(value: Expression, charset: Expression): Encode = new Encode(value, charset)
 }
 
 /**

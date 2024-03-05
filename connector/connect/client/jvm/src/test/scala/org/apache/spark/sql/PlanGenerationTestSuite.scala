@@ -20,7 +20,7 @@ import java.nio.file.{Files, Path}
 import java.util.{Collections, Properties}
 import java.util.concurrent.atomic.AtomicLong
 
-import scala.collection.mutable
+import scala.collection.{immutable, mutable}
 import scala.jdk.CollectionConverters._
 import scala.util.{Failure, Success, Try}
 
@@ -120,7 +120,9 @@ class PlanGenerationTestSuite
   }
 
   override protected def afterAll(): Unit = {
-    session.close()
+    // Don't call client.releaseSession on close(), because the connection details are dummy.
+    session.releaseSessionOnClose = false
+    session.stop()
     if (cleanOrphanedGoldenFiles) {
       cleanOrphanedGoldenFile()
     }
@@ -514,6 +516,10 @@ class PlanGenerationTestSuite
     simple.where("a + id < 1000")
   }
 
+  test("between expr") {
+    simple.selectExpr("rand(123) BETWEEN 0.1 AND 0.2")
+  }
+
   test("unpivot values") {
     simple.unpivot(
       ids = Array(fn.col("id"), fn.col("a")),
@@ -690,6 +696,11 @@ class PlanGenerationTestSuite
 
   test("distinct") {
     simple.distinct()
+  }
+
+  test("select collated string") {
+    val schema = StructType(StructField("s", StringType(1)) :: Nil)
+    createLocalRelation(schema.catalogString).select("s")
   }
 
   /* Column API */
@@ -2119,6 +2130,14 @@ class PlanGenerationTestSuite
     fn.months_between(fn.current_date(), fn.col("d"), roundOff = true)
   }
 
+  temporalFunctionTest("monthname") {
+    fn.monthname(fn.col("d"))
+  }
+
+  temporalFunctionTest("dayname") {
+    fn.dayname(fn.col("d"))
+  }
+
   temporalFunctionTest("next_day") {
     fn.next_day(fn.col("d"), "Mon")
   }
@@ -3015,6 +3034,12 @@ class PlanGenerationTestSuite
     simple.groupBy(Column("id")).pivot("a").agg(functions.count(Column("b")))
   }
 
+  test("groupingSets") {
+    simple
+      .groupingSets(Seq(Seq(fn.col("a")), Seq.empty[Column]), fn.col("a"))
+      .agg("a" -> "max", "a" -> "count")
+  }
+
   test("width_bucket") {
     simple.select(fn.width_bucket(fn.col("b"), fn.col("b"), fn.col("b"), fn.col("a")))
   }
@@ -3041,6 +3066,7 @@ class PlanGenerationTestSuite
       fn.lit(Array.tabulate(10)(i => ('A' + i).toChar)),
       fn.lit(Array.tabulate(23)(i => (i + 120).toByte)),
       fn.lit(mutable.ArraySeq.make(Array[Byte](8.toByte, 6.toByte))),
+      fn.lit(immutable.ArraySeq.unsafeWrapArray(Array[Int](8, 6))),
       fn.lit(null),
       fn.lit(java.time.LocalDate.of(2020, 10, 10)),
       fn.lit(Decimal.apply(BigDecimal(8997620, 6))),
@@ -3110,6 +3136,7 @@ class PlanGenerationTestSuite
       fn.typedLit(Array.tabulate(10)(i => ('A' + i).toChar)),
       fn.typedLit(Array.tabulate(23)(i => (i + 120).toByte)),
       fn.typedLit(mutable.ArraySeq.make(Array[Byte](8.toByte, 6.toByte))),
+      fn.typedLit(immutable.ArraySeq.unsafeWrapArray(Array[Int](8, 6))),
       fn.typedLit(null),
       fn.typedLit(java.time.LocalDate.of(2020, 10, 10)),
       fn.typedLit(Decimal.apply(BigDecimal(8997620, 6))),
